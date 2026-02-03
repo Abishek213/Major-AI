@@ -5,7 +5,7 @@
 const {
   FraudDetectionAgent,
 } = require("../../agents/admin-agents/fraud-detection");
-const { getLogger } = require("../../shared/utils/logger");
+const { getLogger } = require("../../config/logger");
 
 // Mock dependencies
 jest.mock("../../../shared/utils/logger");

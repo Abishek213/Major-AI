@@ -1,867 +1,710 @@
-/**
- * Enhanced Vector Store for AI Agents
- * Supports multiple vector databases and advanced retrieval
- */
-
-const { Chroma } = require("langchain/vectorstores/chroma");
-const { OpenAIEmbeddings } = require("langchain/embeddings/openai");
-const { RecursiveCharacterTextSplitter } = require("langchain/text_splitter");
-const { Document } = require("langchain/document");
+const { OpenAIEmbeddings } = require("@langchain/openai");
+const { RecursiveCharacterTextSplitter } = require("@langchain/textsplitters");
 const fs = require("fs").promises;
 const path = require("path");
-const crypto = require("crypto");
+const logger = require("../../config/logger");
 
-class EnhancedVectorStore {
-  constructor(config = {}) {
-    this.config = {
-      // Vector store type
-      type: config.type || "chroma", // chroma, pinecone, weaviate
+/**
+ * ============================================================================
+ * VECTOR STORE MANAGER - FAQ & DOCUMENT SEARCH
+ * ============================================================================
+ *
+ * PURPOSE:
+ * - Enables semantic search over FAQ documents (meaning, not just keywords)
+ * - Stores document embeddings for fast similarity matching
+ * - Supports RAG (Retrieval Augmented Generation) for accurate AI responses
+ * - Uses in-memory vector storage (no external database needed)
+ *
+ * ============================================================================
+ * HOW RAG WORKS WITH VECTOR STORE:
+ * ============================================================================
+ *
+ * WITHOUT VECTOR STORE (BAD):
+ * User: "How do I cancel?"
+ * AI: *Makes up answer* "Contact support..." ❌ WRONG
+ *
+ * WITH VECTOR STORE (GOOD):
+ * User: "How do I cancel?"
+ * Vector Store: Finds relevant FAQ chunks about cancellation
+ * AI: Gets FAQ context → "Go to My Bookings → Cancel..." ✅ CORRECT
+ *
+ * ============================================================================
+ * SEMANTIC SEARCH EXAMPLE:
+ * ============================================================================
+ *
+ * Traditional Keyword Search:
+ * Query: "abort my reservation"
+ * Match: ❌ No results (no exact match for "abort" or "reservation")
+ *
+ * Semantic Vector Search:
+ * Query: "abort my reservation"
+ * Understands meaning: "cancel" = "abort", "booking" = "reservation"
+ * Match: ✅ Returns cancellation FAQ
+ *
+ * ============================================================================
+ * ARCHITECTURE:
+ * ============================================================================
+ *
+ * FAQ Document
+ *     ↓
+ * Text Splitter (breaks into chunks)
+ *     ↓
+ * OpenAI Embeddings (converts to vectors)
+ *     ↓
+ * Memory Storage (stores vectors in RAM)
+ *     ↓
+ * Cosine Similarity Search (finds relevant chunks)
+ *     ↓
+ * Return to AI Agent (for context)
+ *
+ * ============================================================================
+ */
 
-      // Embeddings configuration
-      embeddings: config.embeddings || {
-        provider: "openai",
-        model: "text-embedding-ada-002",
-        dimensions: 1536,
-      },
+/**
+ * Simple In-Memory Vector Store
+ * Stores embeddings in memory and performs cosine similarity search
+ */
+class SimpleMemoryVectorStore {
+  constructor() {
+    this.documents = []; // Array of { id, content, metadata, embedding }
+  }
 
-      // Text splitting configuration
-      textSplitter: config.textSplitter || {
-        chunkSize: 1000,
-        chunkOverlap: 200,
-        separators: ["\n\n", "\n", " ", ""],
-      },
+  /**
+   * Add documents with their embeddings
+   */
+  add(ids, documents, embeddings, metadatas) {
+    for (let i = 0; i < ids.length; i++) {
+      this.documents.push({
+        id: ids[i],
+        content: documents[i],
+        metadata: metadatas[i] || {},
+        embedding: embeddings[i],
+      });
+    }
+  }
 
-      // Retrieval configuration
-      retrieval: config.retrieval || {
-        k: 5, // Number of results to retrieve
-        scoreThreshold: 0.7, // Minimum similarity score
-        includeMetadata: true,
-        includeDistance: true,
-      },
+  /**
+   * Calculate cosine similarity between two vectors
+   */
+  cosineSimilarity(a, b) {
+    let dotProduct = 0;
+    let normA = 0;
+    let normB = 0;
 
-      // Cache configuration
-      cache: config.cache || {
-        enabled: true,
-        ttl: 3600000, // 1 hour in milliseconds
-        maxSize: 1000,
-      },
+    for (let i = 0; i < a.length; i++) {
+      dotProduct += a[i] * b[i];
+      normA += a[i] * a[i];
+      normB += b[i] * b[i];
+    }
 
-      // Index configuration
-      indexes: config.indexes || {
-        faq: "faq_index",
-        events: "events_index",
-        users: "users_index",
-        agents: "agents_index",
-      },
+    const similarity = dotProduct / (Math.sqrt(normA) * Math.sqrt(normB));
+    return isNaN(similarity) ? 0 : similarity;
+  }
 
-      // Performance configuration
-      performance: config.performance || {
-        batchSize: 100,
-        concurrency: 5,
-        timeout: 30000,
-      },
+  /**
+   * Search for similar documents
+   */
+  query(queryEmbedding, nResults = 3) {
+    if (this.documents.length === 0) {
+      return { documents: [[]], distances: [[]], metadatas: [[]] };
+    }
 
-      ...config,
+    // Calculate similarities for all documents
+    const results = this.documents.map((doc) => ({
+      ...doc,
+      similarity: this.cosineSimilarity(queryEmbedding, doc.embedding),
+      // Convert similarity to distance (1 - similarity)
+      distance: 1 - this.cosineSimilarity(queryEmbedding, doc.embedding),
+    }));
+
+    // Sort by similarity (descending)
+    results.sort((a, b) => b.similarity - a.similarity);
+
+    // Take top N results
+    const topResults = results.slice(0, nResults);
+
+    // Format as ChromaDB-style response
+    return {
+      documents: [topResults.map((r) => r.content)],
+      distances: [topResults.map((r) => r.distance)],
+      metadatas: [topResults.map((r) => r.metadata)],
     };
-
-    // Initialize components
-    this.embeddings = this.createEmbeddings();
-    this.textSplitter = this.createTextSplitter();
-    this.vectorStores = new Map();
-    this.cache = new Map();
-    this.stats = {
-      queries: 0,
-      hits: 0,
-      misses: 0,
-      embeddingsGenerated: 0,
-      documentsIndexed: 0,
-    };
-
-    // Initialize indexes
-    this.initializeIndexes();
   }
 
-  createEmbeddings() {
-    switch (this.config.embeddings.provider) {
-      case "openai":
-        return new OpenAIEmbeddings({
-          openAIApiKey: process.env.OPENAI_API_KEY,
-          modelName: this.config.embeddings.model,
-          dimensions: this.config.embeddings.dimensions,
-        });
-      // Add more embedding providers here
-      default:
-        throw new Error(
-          `Unsupported embedding provider: ${this.config.embeddings.provider}`
-        );
+  /**
+   * Get document count
+   */
+  count() {
+    return this.documents.length;
+  }
+
+  /**
+   * Clear all documents
+   */
+  clear() {
+    this.documents = [];
+  }
+}
+
+class VectorStoreManager {
+  constructor() {
+    this.store = null; // SimpleMemoryVectorStore instance
+    this.embeddings = null; // OpenAIEmbeddings instance
+    this.isInitialized = false;
+    this.documentCount = 0;
+    this.chunkSize = 500; // Characters per chunk
+    this.chunkOverlap = 50; // Overlap between chunks
+    this.embeddingModel = "text-embedding-ada-002";
+    this.mockMode = false; // Fallback when no API key
+    this.documents = null; // used only in mock mode
+  }
+
+  /**
+   * ========================================================================
+   * INITIALIZE VECTOR STORE
+   * ========================================================================
+   *
+   * Sets up in-memory vector store and OpenAI embeddings.
+   * Falls back to mock mode if OPENAI_API_KEY is missing.
+   *
+   * @returns {Promise<{ success: boolean, mode: string }>}
+   */
+  async initialize() {
+    if (this.isInitialized) {
+      logger.info("✅ Vector store already initialized");
+      return { success: true, mode: this.mockMode ? "mock" : "live" };
     }
-  }
-
-  createTextSplitter() {
-    return new RecursiveCharacterTextSplitter({
-      chunkSize: this.config.textSplitter.chunkSize,
-      chunkOverlap: this.config.textSplitter.chunkOverlap,
-      separators: this.config.textSplitter.separators,
-    });
-  }
-
-  async initializeIndexes() {
-    console.log("Initializing vector store indexes...");
-
-    for (const [name, indexName] of Object.entries(this.config.indexes)) {
-      try {
-        const store = await this.createVectorStore(indexName);
-        this.vectorStores.set(name, store);
-        console.log(`  ✅ Index initialized: ${name} -> ${indexName}`);
-      } catch (error) {
-        console.error(
-          `  ❌ Failed to initialize index ${name}:`,
-          error.message
-        );
-      }
-    }
-  }
-
-  async createVectorStore(indexName) {
-    switch (this.config.type) {
-      case "chroma":
-        return await Chroma.fromExistingCollection(this.embeddings, {
-          collectionName: indexName,
-          url: process.env.CHROMA_URL || "http://localhost:8000",
-        });
-      // Add more vector store types here
-      default:
-        throw new Error(`Unsupported vector store type: ${this.config.type}`);
-    }
-  }
-
-  async addDocuments(indexName, documents, metadata = {}) {
-    const startTime = Date.now();
 
     try {
-      // Get or create vector store
-      let vectorStore = this.vectorStores.get(indexName);
-      if (!vectorStore) {
-        vectorStore = await this.createVectorStore(indexName);
-        this.vectorStores.set(indexName, vectorStore);
+      logger.info("🚀 Initializing Vector Store...");
+
+      const apiKey = process.env.OPENAI_API_KEY;
+
+      if (!apiKey) {
+        logger.warn(
+          "⚠️ OPENAI_API_KEY not found. Vector store will operate in mock mode."
+        );
+        logger.warn(
+          "Mock mode uses keyword-based search instead of semantic search."
+        );
+        this.mockMode = true;
+        this.isInitialized = true;
+        return { success: true, mode: "mock" };
       }
 
-      // Split documents if needed
-      let splitDocs = documents;
-      if (this.config.textSplitter.enabled !== false) {
-        splitDocs = await this.textSplitter.splitDocuments(documents);
+      // Initialize in-memory vector store
+      this.store = new SimpleMemoryVectorStore();
+      logger.info("📦 In-memory vector store initialized");
+
+      // Initialize OpenAI Embeddings
+      this.embeddings = new OpenAIEmbeddings({
+        openAIApiKey: apiKey,
+        modelName: this.embeddingModel,
+        timeout: 30000,
+      });
+      logger.success("✅ OpenAI Embeddings initialized");
+      logger.info(`📊 Using model: ${this.embeddingModel}`);
+
+      this.mockMode = false;
+      this.isInitialized = true;
+      return { success: true, mode: "live" };
+    } catch (error) {
+      logger.error("❌ Error initializing vector store:", error);
+      logger.warn("Falling back to mock mode due to initialization error");
+      this.mockMode = true;
+      this.isInitialized = true;
+      return { success: false, mode: "mock", error: error.message };
+    }
+  }
+
+  /**
+   * ========================================================================
+   * LOAD FAQ DOCUMENTS
+   * ========================================================================
+   *
+   * Reads the FAQ markdown file, splits into chunks, generates embeddings
+   * via OpenAI, and stores them in memory.
+   *
+   * CHUNKING STRATEGY:
+   * - Size: 500 characters per chunk
+   * - Overlap: 50 characters (prevents context loss at boundaries)
+   * - Separators: Prioritise markdown headers, then paragraphs
+   *
+   * @param {string} faqFilePath - Path to FAQ markdown file
+   * @returns {Promise<number>} Number of document chunks loaded
+   */
+  async loadFAQDocuments(faqFilePath) {
+    try {
+      if (!this.isInitialized) {
+        await this.initialize();
       }
 
-      // Add metadata to documents
-      const enhancedDocs = splitDocs.map((doc, index) => {
-        const docMetadata = {
-          ...doc.metadata,
-          ...metadata,
-          index: index,
-          chunkId: crypto
-            .createHash("md5")
-            .update(doc.pageContent)
-            .digest("hex"),
-          timestamp: new Date().toISOString(),
-          source: metadata.source || "unknown",
-        };
+      logger.info(`📄 Loading FAQ from: ${faqFilePath}`);
 
-        return new Document({
-          pageContent: doc.pageContent,
-          metadata: docMetadata,
-        });
+      // Check file exists
+      try {
+        await fs.access(faqFilePath);
+      } catch {
+        throw new Error(`FAQ file not found at: ${faqFilePath}`);
+      }
+
+      const faqContent = await fs.readFile(faqFilePath, "utf-8");
+      if (!faqContent || faqContent.trim().length === 0) {
+        throw new Error("FAQ file is empty");
+      }
+      logger.info(`📖 FAQ file size: ${faqContent.length} characters`);
+
+      // ===================================================================
+      // TEXT SPLITTING
+      // ===================================================================
+      const textSplitter = new RecursiveCharacterTextSplitter({
+        chunkSize: this.chunkSize,
+        chunkOverlap: this.chunkOverlap,
+        separators: ["\n## ", "\n### ", "\n#### ", "\n\n", "\n", ". ", " "],
       });
 
-      // Add to vector store in batches
-      const batchSize = this.config.performance.batchSize;
-      for (let i = 0; i < enhancedDocs.length; i += batchSize) {
-        const batch = enhancedDocs.slice(i, i + batchSize);
-        await vectorStore.addDocuments(batch);
+      const docs = await textSplitter.createDocuments([faqContent]);
+      logger.info(`📊 Split FAQ into ${docs.length} chunks`);
 
-        // Update stats
-        this.stats.documentsIndexed += batch.length;
-
-        // Small delay to avoid rate limiting
-        if (i + batchSize < enhancedDocs.length) {
-          await new Promise((resolve) => setTimeout(resolve, 100));
-        }
+      if (docs.length > 0 && process.env.DEBUG === "true") {
+        logger.debug(
+          `Sample chunk: ${docs[0].pageContent.substring(0, 100)}...`
+        );
       }
 
-      // Clear cache for this index
-      this.clearCacheForIndex(indexName);
+      // ===================================================================
+      // MOCK MODE – store raw docs for keyword fallback, skip embeddings
+      // ===================================================================
+      if (this.mockMode || !this.embeddings) {
+        logger.warn(
+          "⚠️ Running in mock mode. Vector search will use keyword matching."
+        );
+        this.documents = docs.map((doc) => ({
+          content: doc.pageContent,
+          metadata: doc.metadata,
+        }));
+        this.documentCount = docs.length;
+        return docs.length;
+      }
+
+      // ===================================================================
+      // GENERATE EMBEDDINGS
+      // ===================================================================
+      logger.info("🔄 Generating embeddings (this may take a moment)...");
+      const startTime = Date.now();
+
+      const texts = docs.map((d) => d.pageContent);
+      const embeddings = await this.embeddings.embedDocuments(texts);
+
+      // ===================================================================
+      // STORE IN MEMORY
+      // ===================================================================
+      const ids = texts.map(
+        (_, i) => `faq_chunk_${String(i).padStart(6, "0")}`
+      );
+      const metadatas = docs.map((d) => d.metadata || {});
+
+      this.store.add(ids, texts, embeddings, metadatas);
 
       const duration = Date.now() - startTime;
-      console.log(
-        `Indexed ${enhancedDocs.length} documents to ${indexName} in ${duration}ms`
+      this.documentCount = docs.length;
+
+      logger.success(
+        `✅ Loaded ${this.documentCount} FAQ chunks into vector store in ${duration}ms`
       );
 
-      return {
-        success: true,
-        index: indexName,
-        documentsIndexed: enhancedDocs.length,
-        duration,
-        stats: {
-          originalDocs: documents.length,
-          splitDocs: enhancedDocs.length,
-          averageChunkSize:
-            enhancedDocs.reduce((sum, doc) => sum + doc.pageContent.length, 0) /
-            enhancedDocs.length,
-        },
-      };
+      return this.documentCount;
     } catch (error) {
-      console.error(`Error adding documents to ${indexName}:`, error);
-      return {
-        success: false,
-        error: error.message,
-        duration: Date.now() - startTime,
-      };
+      logger.error("❌ Error loading FAQ documents:", error);
+      throw new Error(`Failed to load FAQ: ${error.message}`);
     }
   }
 
-  async similaritySearch(indexName, query, options = {}) {
-    const startTime = Date.now();
-    this.stats.queries++;
-
-    // Check cache first
-    const cacheKey = this.getCacheKey(indexName, query, options);
-    if (this.config.cache.enabled && this.cache.has(cacheKey)) {
-      const cached = this.cache.get(cacheKey);
-      if (Date.now() - cached.timestamp < this.config.cache.ttl) {
-        this.stats.hits++;
-        return cached.results;
-      } else {
-        // Cache expired
-        this.cache.delete(cacheKey);
-      }
-    }
-
-    this.stats.misses++;
-
+  /**
+   * ========================================================================
+   * SEARCH
+   * ========================================================================
+   *
+   * Performs semantic search to find relevant FAQ chunks
+   *
+   * @param {string} query - Search query
+   * @param {number} topK - Number of results to return
+   * @returns {Promise<Array>} Array of search results with content and scores
+   */
+  async search(query, topK = 3) {
     try {
-      // Get vector store
-      const vectorStore = this.vectorStores.get(indexName);
-      if (!vectorStore) {
-        throw new Error(`Vector store not found for index: ${indexName}`);
+      if (!this.isInitialized) {
+        await this.initialize();
       }
 
-      // Perform similarity search
-      const searchOptions = {
-        k: options.k || this.config.retrieval.k,
-        filter: options.filter,
-        includeMetadata:
-          options.includeMetadata !== undefined
-            ? options.includeMetadata
-            : this.config.retrieval.includeMetadata,
-        includeDistance:
-          options.includeDistance !== undefined
-            ? options.includeDistance
-            : this.config.retrieval.includeDistance,
-      };
+      if (!query || typeof query !== "string" || query.trim().length === 0) {
+        logger.warn("Empty search query provided");
+        return [];
+      }
 
-      const results = await vectorStore.similaritySearch(
-        query,
-        searchOptions.k,
-        searchOptions.filter
-      );
+      logger.debug(`🔍 Searching for: "${query}" (top ${topK} results)`);
 
-      // Apply score threshold
-      const filteredResults = results.filter((result) => {
-        if (result.metadata && result.metadata.distance !== undefined) {
-          const similarity = 1 - result.metadata.distance; // Convert distance to similarity
-          return (
-            similarity >=
-            (options.scoreThreshold || this.config.retrieval.scoreThreshold)
-          );
-        }
-        return true;
-      });
+      // ===================================================================
+      // MOCK MODE - Keyword-based search
+      // ===================================================================
+      if (this.mockMode || !this.store) {
+        logger.debug("Using mock keyword search");
+        return this.getMockResults(query, topK);
+      }
+
+      // ===================================================================
+      // SEMANTIC SEARCH - Using OpenAI embeddings
+      // ===================================================================
+      const startTime = Date.now();
+
+      // Generate embedding for query
+      const queryEmbedding = await this.embeddings.embedQuery(query);
+
+      // Search vector store
+      const results = this.store.query(queryEmbedding, topK);
+
+      const duration = Date.now() - startTime;
 
       // Format results
-      const formattedResults = filteredResults.map((result, index) => {
-        const formatted = {
-          content: result.pageContent,
-          metadata: result.metadata || {},
-          index: index,
-          score:
-            result.metadata && result.metadata.distance !== undefined
-              ? 1 - result.metadata.distance
-              : 1.0,
-        };
-
-        // Include distance if requested
-        if (
-          searchOptions.includeDistance &&
-          result.metadata &&
-          result.metadata.distance !== undefined
-        ) {
-          formatted.distance = result.metadata.distance;
-        }
-
-        return formatted;
-      });
-
-      // Sort by score (highest first)
-      formattedResults.sort((a, b) => b.score - a.score);
-
-      // Cache results
-      if (this.config.cache.enabled && formattedResults.length > 0) {
-        this.cache.set(cacheKey, {
-          results: formattedResults,
-          timestamp: Date.now(),
-        });
-
-        // Clean cache if too large
-        if (this.cache.size > this.config.cache.maxSize) {
-          this.cleanCache();
+      const formattedResults = [];
+      if (results.documents && results.documents[0]) {
+        for (let i = 0; i < results.documents[0].length; i++) {
+          formattedResults.push({
+            content: results.documents[0][i],
+            metadata: results.metadatas[0][i] || {},
+            score: 1 - results.distances[0][i], // Convert distance back to similarity
+            rank: i + 1,
+          });
         }
       }
 
-      const duration = Date.now() - startTime;
-      console.log(
-        `Similarity search on ${indexName}: ${formattedResults.length} results in ${duration}ms`
+      logger.info(
+        `🔍 Found ${formattedResults.length} relevant chunks in ${duration}ms`
       );
 
       return formattedResults;
     } catch (error) {
-      console.error(`Error in similarity search for ${indexName}:`, error);
-      return [];
+      logger.error("❌ Error searching vector store:", error);
+      logger.warn("Falling back to mock results due to search error");
+      return this.getMockResults(query, topK);
     }
   }
 
-  async similaritySearchWithScore(indexName, query, options = {}) {
-    const results = await this.similaritySearch(indexName, query, {
-      ...options,
-      includeDistance: true,
-    });
+  /**
+   * ========================================================================
+   * GET CONTEXT
+   * ========================================================================
+   *
+   * Get formatted context string from search results
+   *
+   * @param {string} query - Search query
+   * @param {number} topK - Number of results to return
+   * @returns {Promise<string>} Formatted context string
+   */
+  async getContext(query, topK = 3) {
+    try {
+      const results = await this.search(query, topK);
 
-    return results.map((result) => ({
-      document: {
-        content: result.content,
-        metadata: result.metadata,
+      if (results.length === 0) {
+        logger.warn("No relevant context found for query");
+        return "";
+      }
+
+      const formattedContext = results
+        .map((result, index) => {
+          const contextLabel = `[Context ${index + 1}]`;
+          const score = result.score
+            ? ` (Relevance: ${result.score.toFixed(2)})`
+            : "";
+          return `${contextLabel}${score}:\n${result.content}`;
+        })
+        .join("\n\n---\n\n");
+
+      logger.debug(
+        `📝 Generated context: ${formattedContext.length} characters from ${results.length} chunks`
+      );
+
+      return formattedContext;
+    } catch (error) {
+      logger.error("Error getting context:", error);
+      return "";
+    }
+  }
+
+  /**
+   * ========================================================================
+   * MOCK RESULTS (Fallback)
+   * ========================================================================
+   *
+   * Provides keyword-based search when OpenAI is not available
+   */
+  getMockResults(query, topK = 3) {
+    const lowerQuery = query.toLowerCase();
+
+    const mockFAQs = [
+      {
+        keywords: ["cancel", "cancellation", "abort", "stop", "refund"],
+        content: `**How to Cancel Your Booking**
+
+To cancel your booking:
+1. Log in to your Eventa account
+2. Go to "My Bookings" section
+3. Find the event you want to cancel
+4. Click the "Cancel Booking" button
+5. Provide a cancellation reason (optional)
+6. Confirm cancellation
+
+**Refund Policy:**
+- Cancel 48+ hours before event: 100% refund
+- Cancel 24-48 hours before: 50% refund
+- Cancel <24 hours before: No refund
+
+Refunds are processed within 7-10 business days to your original payment method (Khalti or eSewa).`,
+        score: 0.95,
       },
-      score: result.score,
-    }));
-  }
+      {
+        keywords: ["refund", "money back", "reimbursement", "return"],
+        content: `**Refund Policy**
 
-  async hybridSearch(indexName, query, options = {}) {
-    const startTime = Date.now();
+Refunds are processed based on when you cancel:
 
-    try {
-      // Perform vector similarity search
-      const vectorResults = await this.similaritySearch(
-        indexName,
-        query,
-        options
-      );
+**Full Refund (100%):**
+- Cancellation made 48+ hours before event start time
+- Event cancelled by organizer
 
-      // Perform keyword search (if implemented)
-      const keywordResults = await this.keywordSearch(
-        indexName,
-        query,
-        options
-      );
+**Partial Refund (50%):**
+- Cancellation made 24-48 hours before event
 
-      // Combine results using reciprocal rank fusion (RRF)
-      const combinedResults = this.combineSearchResults(
-        vectorResults,
-        keywordResults,
-        options
-      );
+**No Refund:**
+- Cancellation made less than 24 hours before event
+- No-show to event
 
-      const duration = Date.now() - startTime;
-      console.log(
-        `Hybrid search on ${indexName}: ${combinedResults.length} results in ${duration}ms`
-      );
+**Processing Time:**
+Refunds typically take 7-10 business days to appear in your Khalti or eSewa account.`,
+        score: 0.93,
+      },
+      {
+        keywords: ["book", "booking", "reserve", "ticket", "purchase", "buy"],
+        content: `**How to Book an Event**
 
-      return combinedResults;
-    } catch (error) {
-      console.error(`Error in hybrid search for ${indexName}:`, error);
-      return [];
-    }
-  }
+**Booking Process:**
+1. **Browse Events:** Find an event you're interested in
+2. **Select Event:** Click on the event for details
+3. **Choose Tickets:** Select number of seats
+4. **Review Details:** Check event date, time, location, and price
+5. **Proceed to Payment:** Click "Book Now"
+6. **Complete Payment:** Pay securely via Khalti or eSewa
+7. **Receive Confirmation:** You'll get a booking confirmation email
 
-  async keywordSearch(indexName, query, options = {}) {
-    // Basic keyword search implementation
-    // In production, use a proper search engine like Elasticsearch
-    const vectorStore = this.vectorStores.get(indexName);
-    if (!vectorStore) {
-      return [];
-    }
+**What You'll Need:**
+- Active Eventa account
+- Valid Khalti or eSewa account
+- Event must have available slots`,
+        score: 0.91,
+      },
+      {
+        keywords: ["payment", "pay", "khalti", "esewa", "transaction"],
+        content: `**Payment Methods**
 
-    // This is a simplified implementation
-    // Actual implementation would depend on the vector store
-    const allDocs = await vectorStore.getDocuments();
+Eventa accepts two secure payment methods:
 
-    const keywords = query
-      .toLowerCase()
-      .split(/\s+/)
-      .filter((k) => k.length > 2);
-    const results = [];
+**1. Khalti:**
+- Digital wallet popular in Nepal
+- Instant payment confirmation
+- Secure and encrypted transactions
 
-    for (const doc of allDocs) {
-      const content = doc.pageContent.toLowerCase();
-      let score = 0;
+**2. eSewa:**
+- Leading digital payment service
+- Quick and reliable
+- Widely accepted
 
-      for (const keyword of keywords) {
-        if (content.includes(keyword)) {
-          score += 1;
-          // Bonus for multiple occurrences
-          const occurrences = (content.match(new RegExp(keyword, "g")) || [])
-            .length;
-          score += Math.min(occurrences - 1, 3) * 0.1;
-        }
-      }
+**Payment Process:**
+1. Select your preferred payment method
+2. Enter your wallet credentials
+3. Confirm payment amount
+4. Complete authentication
+5. Receive instant confirmation
 
-      if (score > 0) {
-        results.push({
-          content: doc.pageContent,
-          metadata: doc.metadata,
-          score: score / keywords.length, // Normalize score
-          searchType: "keyword",
-        });
-      }
-    }
+**Payment Issues:**
+If your payment fails but you were charged, it's usually a pending authorization. Contact support@eventa.com with your transaction ID.`,
+        score: 0.89,
+      },
+      {
+        keywords: [
+          "account",
+          "login",
+          "password",
+          "profile",
+          "register",
+          "signup",
+        ],
+        content: `**Account Management**
 
-    // Sort by score
-    results.sort((a, b) => b.score - a.score);
+**Creating an Account:**
+1. Click "Sign Up" on homepage
+2. Enter email and password
+3. Verify your email
+4. Complete profile information
 
-    // Limit results
-    return results.slice(0, options.k || this.config.retrieval.k);
-  }
+**Login Issues:**
+- Forgot password? Click "Forgot Password" on login page
+- Email not verified? Check spam folder or request new verification email
 
-  combineSearchResults(vectorResults, keywordResults, options = {}) {
-    const k = options.k || this.config.retrieval.k;
-    const vectorWeight = options.vectorWeight || 0.7;
-    const keywordWeight = options.keywordWeight || 0.3;
+**Profile Management:**
+Go to "My Profile" to:
+- Update personal information
+- Change password
+- Manage payment methods
+- View booking history`,
+        score: 0.87,
+      },
+      {
+        keywords: ["event", "details", "information", "time", "location"],
+        content: `**Event Information**
 
-    // Create a map of unique documents
-    const documentMap = new Map();
+Each event listing includes:
+- Event name and description
+- Date and time
+- Venue/location details
+- Ticket price
+- Available slots
+- Organizer information
+- Category/tags
+- Reviews from past attendees
 
-    // Add vector results
-    vectorResults.forEach((result, index) => {
-      const docKey = this.getDocumentKey(result.content, result.metadata);
-      const score = (k - index) / k; // Reciprocal rank
+**Finding Events:**
+- Browse by category
+- Search by keyword
+- Filter by date, price, location
+- Check "Recommended for You" section`,
+        score: 0.85,
+      },
+    ];
 
-      documentMap.set(docKey, {
-        content: result.content,
-        metadata: result.metadata,
-        vectorScore: score * vectorWeight,
-        keywordScore: 0,
-        totalScore: score * vectorWeight,
+    const matches = mockFAQs
+      .filter((faq) =>
+        faq.keywords.some((keyword) => lowerQuery.includes(keyword))
+      )
+      .map((faq) => ({
+        content: faq.content,
+        metadata: { source: "mock" },
+        score: faq.score,
+      }));
+
+    if (matches.length === 0) {
+      matches.push({
+        content: `**General Information**
+
+Welcome to Eventa! I'm here to help you with:
+- Booking events
+- Cancellations and refunds
+- Payment issues
+- Account management
+
+Please ask a specific question, and I'll provide detailed information from our FAQ.
+
+Common topics:
+• "How do I book an event?"
+• "What's your refund policy?"
+• "How do I cancel my booking?"
+• "What payment methods do you accept?"`,
+        metadata: { source: "mock-generic" },
+        score: 0.5,
       });
-    });
-
-    // Add keyword results
-    keywordResults.forEach((result, index) => {
-      const docKey = this.getDocumentKey(result.content, result.metadata);
-      const score = (k - index) / k; // Reciprocal rank
-
-      if (documentMap.has(docKey)) {
-        const existing = documentMap.get(docKey);
-        existing.keywordScore = score * keywordWeight;
-        existing.totalScore = existing.vectorScore + existing.keywordScore;
-      } else {
-        documentMap.set(docKey, {
-          content: result.content,
-          metadata: result.metadata,
-          vectorScore: 0,
-          keywordScore: score * keywordWeight,
-          totalScore: score * keywordWeight,
-        });
-      }
-    });
-
-    // Convert to array and sort by total score
-    const combinedResults = Array.from(documentMap.values())
-      .sort((a, b) => b.totalScore - a.totalScore)
-      .slice(0, k);
-
-    return combinedResults;
-  }
-
-  async getEmbedding(text) {
-    try {
-      const embedding = await this.embeddings.embedQuery(text);
-      this.stats.embeddingsGenerated++;
-      return embedding;
-    } catch (error) {
-      console.error("Error generating embedding:", error);
-      throw error;
     }
+
+    return matches.slice(0, topK);
   }
 
-  async getEmbeddings(texts) {
+  /**
+   * ========================================================================
+   * ADD NEW DOCUMENTS (incremental)
+   * ========================================================================
+   *
+   * @param {Array<string>} documents - Array of document texts
+   * @returns {Promise<number>} Number of new chunks added
+   */
+  async addDocuments(documents) {
     try {
+      if (!this.store || !this.embeddings) {
+        logger.warn("⚠️ Vector store not properly initialized");
+        return 0;
+      }
+
+      if (!Array.isArray(documents) || documents.length === 0) {
+        logger.warn("No documents provided to add");
+        return 0;
+      }
+
+      logger.info(`📥 Adding ${documents.length} new documents...`);
+
+      const textSplitter = new RecursiveCharacterTextSplitter({
+        chunkSize: this.chunkSize,
+        chunkOverlap: this.chunkOverlap,
+      });
+
+      const docs = await textSplitter.createDocuments(documents);
+      const texts = docs.map((d) => d.pageContent);
       const embeddings = await this.embeddings.embedDocuments(texts);
-      this.stats.embeddingsGenerated += texts.length;
-      return embeddings;
+
+      const baseIndex = this.documentCount;
+      const ids = texts.map(
+        (_, i) => `added_chunk_${String(baseIndex + i).padStart(6, "0")}`
+      );
+      const metadatas = docs.map((d) => d.metadata || {});
+
+      this.store.add(ids, texts, embeddings, metadatas);
+
+      this.documentCount += docs.length;
+      logger.success(`✅ Added ${docs.length} new chunks to vector store`);
+      return docs.length;
     } catch (error) {
-      console.error("Error generating embeddings:", error);
+      logger.error("❌ Error adding documents:", error);
       throw error;
     }
   }
 
-  async semanticSearch(indexName, query, context, options = {}) {
-    // Enhanced semantic search with context awareness
-    const enhancedQuery = this.enhanceQueryWithContext(query, context);
-    return await this.similaritySearch(indexName, enhancedQuery, options);
+  /**
+   * Clear all documents from vector store
+   */
+  async clear() {
+    if (this.store) {
+      this.store.clear();
+    }
+    this.documents = null;
+    this.documentCount = 0;
+    logger.info("🗑️ Vector store cleared");
   }
 
-  enhanceQueryWithContext(query, context) {
-    if (!context || typeof context !== "object") {
-      return query;
-    }
-
-    let enhancedQuery = query;
-
-    // Add context keywords
-    if (context.userPreferences) {
-      const prefs = context.userPreferences;
-      if (prefs.interests && Array.isArray(prefs.interests)) {
-        enhancedQuery += " " + prefs.interests.join(" ");
-      }
-      if (prefs.location) {
-        enhancedQuery += " " + prefs.location;
-      }
-    }
-
-    // Add temporal context
-    if (context.temporal) {
-      const now = new Date();
-      if (context.temporal.season) {
-        enhancedQuery += " " + context.temporal.season;
-      }
-      if (context.temporal.timeOfDay) {
-        enhancedQuery += " " + context.temporal.timeOfDay;
-      }
-    }
-
-    // Add event-specific context
-    if (context.eventType) {
-      enhancedQuery += " " + context.eventType;
-    }
-
-    return enhancedQuery.trim();
-  }
-
-  async updateDocument(indexName, documentId, newContent, metadata = {}) {
-    try {
-      const vectorStore = this.vectorStores.get(indexName);
-      if (!vectorStore) {
-        throw new Error(`Vector store not found for index: ${indexName}`);
-      }
-
-      // Delete old document
-      await this.deleteDocument(indexName, documentId);
-
-      // Add updated document
-      const doc = new Document({
-        pageContent: newContent,
-        metadata: {
-          ...metadata,
-          documentId: documentId,
-          updatedAt: new Date().toISOString(),
-        },
-      });
-
-      await this.addDocuments(indexName, [doc], metadata);
-
-      return {
-        success: true,
-        documentId,
-        message: "Document updated successfully",
-      };
-    } catch (error) {
-      console.error(
-        `Error updating document ${documentId} in ${indexName}:`,
-        error
-      );
-      return {
-        success: false,
-        error: error.message,
-      };
-    }
-  }
-
-  async deleteDocument(indexName, documentId) {
-    try {
-      const vectorStore = this.vectorStores.get(indexName);
-      if (!vectorStore) {
-        throw new Error(`Vector store not found for index: ${indexName}`);
-      }
-
-      // This depends on the vector store implementation
-      // For Chroma, you would need to use the delete method with filter
-      console.log(`Document deletion not fully implemented for ${documentId}`);
-
-      return {
-        success: true,
-        message:
-          "Document deletion functionality depends on vector store implementation",
-      };
-    } catch (error) {
-      console.error(
-        `Error deleting document ${documentId} from ${indexName}:`,
-        error
-      );
-      return {
-        success: false,
-        error: error.message,
-      };
-    }
-  }
-
-  async getIndexStats(indexName) {
-    try {
-      const vectorStore = this.vectorStores.get(indexName);
-      if (!vectorStore) {
-        return {
-          exists: false,
-          message: `Index ${indexName} not found`,
-        };
-      }
-
-      // Get document count (implementation depends on vector store)
-      // This is a simplified version
-      const allDocs = await vectorStore.getDocuments();
-
-      return {
-        exists: true,
-        documentCount: allDocs.length,
-        indexName,
-        vectorStoreType: this.config.type,
-      };
-    } catch (error) {
-      console.error(`Error getting stats for index ${indexName}:`, error);
-      return {
-        exists: false,
-        error: error.message,
-      };
-    }
-  }
-
-  getCacheKey(indexName, query, options) {
-    const optionsStr = JSON.stringify(options || {});
-    return `${indexName}_${query}_${optionsStr}`;
-  }
-
-  getDocumentKey(content, metadata) {
-    const metadataStr = metadata ? JSON.stringify(metadata) : "";
-    return crypto
-      .createHash("md5")
-      .update(content + metadataStr)
-      .digest("hex");
-  }
-
-  clearCacheForIndex(indexName) {
-    const keysToDelete = [];
-
-    for (const [key, value] of this.cache.entries()) {
-      if (key.startsWith(`${indexName}_`)) {
-        keysToDelete.push(key);
-      }
-    }
-
-    for (const key of keysToDelete) {
-      this.cache.delete(key);
-    }
-
-    console.log(
-      `Cleared ${keysToDelete.length} cache entries for index ${indexName}`
-    );
-  }
-
-  cleanCache() {
-    const now = Date.now();
-    const keysToDelete = [];
-
-    for (const [key, value] of this.cache.entries()) {
-      if (now - value.timestamp > this.config.cache.ttl) {
-        keysToDelete.push(key);
-      }
-    }
-
-    for (const key of keysToDelete) {
-      this.cache.delete(key);
-    }
-
-    // If still too large, remove oldest entries
-    if (this.cache.size > this.config.cache.maxSize) {
-      const entries = Array.from(this.cache.entries()).sort(
-        (a, b) => a[1].timestamp - b[1].timestamp
-      );
-
-      const toRemove = entries.slice(
-        0,
-        this.cache.size - this.config.cache.maxSize
-      );
-      for (const [key] of toRemove) {
-        this.cache.delete(key);
-      }
-    }
-
-    console.log(
-      `Cache cleaned: ${keysToDelete.length} expired entries removed`
-    );
-  }
-
+  /**
+   * Get statistics about the vector store
+   */
   getStats() {
-    const cacheStats = {
-      size: this.cache.size,
-      hitRate:
-        this.stats.queries > 0
-          ? (this.stats.hits / this.stats.queries) * 100
-          : 0,
-    };
-
     return {
-      ...this.stats,
-      cache: cacheStats,
-      indexes: Array.from(this.vectorStores.keys()),
+      initialized: this.isInitialized,
+      documentCount: this.documentCount,
+      hasStore: !!this.store,
+      hasEmbeddings: !!this.embeddings,
+      mockMode: this.mockMode,
+      chunkSize: this.chunkSize,
+      chunkOverlap: this.chunkOverlap,
+      embeddingModel: this.embeddingModel,
     };
   }
 
-  async exportIndex(indexName, exportPath) {
-    try {
-      const vectorStore = this.vectorStores.get(indexName);
-      if (!vectorStore) {
-        throw new Error(`Index ${indexName} not found`);
-      }
-
-      const documents = await vectorStore.getDocuments();
-      const exportData = {
-        indexName,
-        exportDate: new Date().toISOString(),
-        documentCount: documents.length,
-        documents: documents.map((doc) => ({
-          content: doc.pageContent,
-          metadata: doc.metadata,
-        })),
-      };
-
-      await fs.writeFile(
-        exportPath,
-        JSON.stringify(exportData, null, 2),
-        "utf8"
-      );
-
-      return {
-        success: true,
-        exportPath,
-        documentCount: documents.length,
-      };
-    } catch (error) {
-      console.error(`Error exporting index ${indexName}:`, error);
-      return {
-        success: false,
-        error: error.message,
-      };
-    }
-  }
-
-  async importIndex(indexName, importPath) {
-    try {
-      const data = await fs.readFile(importPath, "utf8");
-      const importData = JSON.parse(data);
-
-      if (importData.indexName !== indexName) {
-        console.warn(
-          `Import data index name (${importData.indexName}) doesn't match target (${indexName})`
-        );
-      }
-
-      const documents = importData.documents.map(
-        (doc) =>
-          new Document({
-            pageContent: doc.content,
-            metadata: doc.metadata,
-          })
-      );
-
-      await this.addDocuments(indexName, documents);
-
-      return {
-        success: true,
-        importedDocuments: documents.length,
-        source: importPath,
-      };
-    } catch (error) {
-      console.error(`Error importing index ${indexName}:`, error);
-      return {
-        success: false,
-        error: error.message,
-      };
-    }
+  /**
+   * Health check
+   */
+  checkHealth() {
+    return {
+      status: this.isInitialized ? "ready" : "not_initialized",
+      mode: this.mockMode ? "mock" : "live",
+      documentCount: this.documentCount,
+      storeType: "simple-memory",
+      embeddingsModel: this.embeddingModel,
+      operational: this.isInitialized && (this.store || this.mockMode),
+    };
   }
 }
 
-// Factory function for creating vector stores
-function createVectorStore(config = {}) {
-  return new EnhancedVectorStore(config);
-}
-
-// Utility functions for common operations
-async function createFAQVectorStore(faqItems, config = {}) {
-  const vectorStore = createVectorStore({
-    ...config,
-    indexes: { faq: "faq_index" },
-  });
-
-  const documents = faqItems.map(
-    (faq) =>
-      new Document({
-        pageContent: `Q: ${faq.question}\nA: ${faq.answer}`,
-        metadata: {
-          id: faq.id,
-          category: faq.category,
-          tags: faq.tags,
-          type: "faq",
-          source: "faq_database",
-        },
-      })
-  );
-
-  await vectorStore.addDocuments("faq", documents);
-  return vectorStore;
-}
-
-async function searchSimilarEvents(query, eventData, config = {}) {
-  const vectorStore = createVectorStore({
-    ...config,
-    indexes: { events: "events_index" },
-  });
-
-  const documents = eventData.map(
-    (event) =>
-      new Document({
-        pageContent: `
-                Event: ${event.name}
-                Description: ${event.description}
-                Category: ${event.category}
-                Location: ${event.location}
-                Tags: ${event.tags.join(", ")}
-                Organizer: ${event.organizer}
-            `,
-        metadata: {
-          eventId: event.id,
-          name: event.name,
-          category: event.category,
-          location: event.location,
-          price: event.price,
-          date: event.date,
-          tags: event.tags,
-          type: "event",
-        },
-      })
-  );
-
-  await vectorStore.addDocuments("events", documents);
-  return await vectorStore.similaritySearch("events", query);
-}
-
-module.exports = {
-  EnhancedVectorStore,
-  createVectorStore,
-  createFAQVectorStore,
-  searchSimilarEvents,
-};
+module.exports = new VectorStoreManager();
