@@ -182,19 +182,21 @@ class AgentController {
       );
 
       // ===================================================================
-      // ENSURE AGENT IS INITIALIZED
+      // GET BOOKING SUPPORT AGENT INSTANCE
       // ===================================================================
-      if (!this.initialized) {
-        await this.initialize();
+      const BookingSupportAgent = require("../../agents/user-agents/booking-support-agent");
+
+      // Check if agent is initialized
+      const agentHealth = BookingSupportAgent.checkHealth();
+      if (agentHealth.status === "not_initialized") {
+        logger.info("Agent not initialized, initializing now...");
+        await BookingSupportAgent.initialize();
       }
 
       // ===================================================================
       // CALL BOOKING SUPPORT AGENT
       // ===================================================================
-      const response = await this.bookingSupportAgent.chat(
-        message,
-        userIdentifier
-      );
+      const response = await BookingSupportAgent.chat(message, userIdentifier);
 
       const duration = Date.now() - startTime;
 
