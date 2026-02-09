@@ -2,86 +2,33 @@ const logger = require("../../config/logger");
 const EventRecommendationAgent = require("../../agents/user-agents/event-recommendation");
 const BookingSupportAgent = require("../../agents/user-agents/booking-support-agent");
 
-/**
- * ============================================================================
- * AGENT CONTROLLER - API ENDPOINT HANDLERS
- * ============================================================================
- *
- * This controller handles HTTP requests and routes them to appropriate AI agents
- *
- * ARCHITECTURE:
- * Backend API → AI Service API → Agent Controller → AI Agents → Response
- *
- * ENDPOINTS STRUCTURE:
- * - User Agents: /api/agents/user/*
- * - Organizer Agents: /api/agents/organizer/*
- * - Admin Agents: /api/agents/admin/*
- * - System: /api/agents/health, /api/agents/status
- *
- * ============================================================================
- */
-
 class AgentController {
   constructor() {
-    // Initialize booking support agent (singleton)
     this.bookingSupportAgent = BookingSupportAgent;
-
-    // Track initialization status
     this.initialized = false;
   }
 
-  /**
-   * ========================================================================
-   * INITIALIZE AGENTS
-   * ========================================================================
-   *
-   * Called on server startup to initialize all agents
-   * Currently only booking support agent needs explicit initialization
-   */
   async initialize() {
     if (this.initialized) {
-      logger.info("✅ Agent controller already initialized");
+      logger.info("Agent controller already initialized");
       return;
     }
 
     try {
-      logger.info("🚀 Initializing AI agents...");
-
-      // Initialize booking support agent (loads FAQ, connects to DB)
+      logger.info("Initializing AI agents...");
       await this.bookingSupportAgent.initialize();
-
       this.initialized = true;
-      logger.success("✅ All AI agents initialized successfully");
+      logger.info("All AI agents initialized successfully");
     } catch (error) {
-      logger.error("❌ Error initializing agents:", error);
+      logger.error("Error initializing agents:", error);
       throw error;
     }
   }
 
-  // ========================================================================
-  // USER AGENTS
-  // ========================================================================
-
-  /**
-   * ========================================================================
-   * POST /api/agents/user/recommendations
-   * ========================================================================
-   *
-   * Generate event recommendations for a user
-   *
-   * Request Body:
-   * {
-   *   userId: string (required),
-   *   limit: number (optional, default: 10),
-   *   userContext: { wishlistEvents, bookedEvents, reviewedEvents },
-   *   candidateEvents: Array of events
-   * }
-   */
   async postRecommendations(req, res) {
     try {
       const { userId, limit = 10, userContext, candidateEvents } = req.body;
 
-      // Validation
       if (!userId) {
         return res.status(400).json({
           success: false,
@@ -90,10 +37,7 @@ class AgentController {
       }
 
       logger.agent("event-recommendation", "processing", `user: ${userId}`);
-
       const agent = new EventRecommendationAgent();
-
-      // Generate recommendations
       const recommendations = await agent.getRecommendations(
         userId,
         parseInt(limit),
@@ -101,7 +45,7 @@ class AgentController {
         candidateEvents
       );
 
-      logger.success(
+      logger.info(
         `Generated ${recommendations.length} recommendations for user ${userId}`
       );
 
@@ -121,46 +65,12 @@ class AgentController {
     }
   }
 
-  /**
-   * ========================================================================
-   * POST /api/agents/user/booking-support/chat
-   * ========================================================================
-   *
-   * PHASE 1.2: Booking Support Agent Chat Endpoint
-   *
-   * This is the main endpoint for the booking support chatbot
-   * Handles FAQ questions, multilingual support, and conversation context
-   *
-   * Request Body:
-   * {
-   *   message: string (required) - User's question,
-   *   userId: string (optional) - For conversation tracking,
-   *   sessionId: string (optional) - Alternative to userId for anonymous users
-   * }
-   *
-   * Response:
-   * {
-   *   success: boolean,
-   *   agent: string,
-   *   message: string - AI's response,
-   *   metadata: {
-   *     userId/sessionId,
-   *     language: { detected, name },
-   *     context: { faqChunksUsed, historyMessagesUsed },
-   *     performance: { responseTimeMs },
-   *     timestamp
-   *   }
-   * }
-   */
   async chatBookingSupport(req, res) {
     const startTime = Date.now();
 
     try {
       const { message, userId, sessionId } = req.body;
 
-      // ===================================================================
-      // VALIDATION
-      // ===================================================================
       if (
         !message ||
         typeof message !== "string" ||
@@ -172,44 +82,26 @@ class AgentController {
         });
       }
 
-      // Use userId if provided, otherwise sessionId, otherwise anonymous
       const userIdentifier = userId || sessionId || "anonymous";
-
       logger.agent(
         "booking-support",
         "received query",
         `[${userIdentifier}]: ${message.substring(0, 50)}...`
       );
 
-      // ===================================================================
-      // GET BOOKING SUPPORT AGENT INSTANCE
-      // ===================================================================
       const BookingSupportAgent = require("../../agents/user-agents/booking-support-agent");
-
-      // Check if agent is initialized
       const agentHealth = BookingSupportAgent.checkHealth();
+
       if (agentHealth.status === "not_initialized") {
         logger.info("Agent not initialized, initializing now...");
         await BookingSupportAgent.initialize();
       }
 
-      // ===================================================================
-      // CALL BOOKING SUPPORT AGENT
-      // ===================================================================
       const response = await BookingSupportAgent.chat(message, userIdentifier);
-
       const duration = Date.now() - startTime;
-
-      // ===================================================================
-      // LOG SUCCESS
-      // ===================================================================
-      logger.success(
+      logger.info(
         `Booking support responded in ${duration}ms [${userIdentifier}]`
       );
-
-      // ===================================================================
-      // RETURN RESPONSE
-      // ===================================================================
       res.json(response);
     } catch (error) {
       const duration = Date.now() - startTime;
@@ -224,19 +116,6 @@ class AgentController {
     }
   }
 
-  /**
-   * ========================================================================
-   * POST /api/agents/user/booking-support/clear-history
-   * ========================================================================
-   *
-   * Clear conversation history for a user
-   * Useful for "New Conversation" button in UI
-   *
-   * Request Body:
-   * {
-   *   userId: string (required) OR sessionId: string (required)
-   * }
-   */
   async clearChatHistory(req, res) {
     try {
       const { userId, sessionId } = req.body;
@@ -254,10 +133,8 @@ class AgentController {
         "clearing history",
         `user: ${userIdentifier}`
       );
-
       const result =
         this.bookingSupportAgent.clearConversationHistory(userIdentifier);
-
       res.json(result);
     } catch (error) {
       logger.error("Clear chat history error:", error);
@@ -269,20 +146,10 @@ class AgentController {
     }
   }
 
-  /**
-   * ========================================================================
-   * GET /api/agents/user/booking-support/health
-   * ========================================================================
-   *
-   * Health check for booking support agent
-   * Returns detailed status of all components
-   */
   async getBookingSupportHealth(req, res) {
     try {
       const health = this.bookingSupportAgent.checkHealth();
-
       const statusCode = health.status === "ready" ? 200 : 503;
-
       res.status(statusCode).json({
         success: health.status === "ready",
         ...health,
@@ -297,18 +164,9 @@ class AgentController {
     }
   }
 
-  /**
-   * ========================================================================
-   * GET /api/agents/user/booking-support/stats
-   * ========================================================================
-   *
-   * Get statistics about booking support agent
-   * Useful for monitoring and analytics dashboards
-   */
   async getBookingSupportStats(req, res) {
     try {
       const stats = this.bookingSupportAgent.getStats();
-
       res.json({
         success: true,
         stats,
@@ -324,16 +182,6 @@ class AgentController {
     }
   }
 
-  /**
-   * ========================================================================
-   * GET /api/agents/user/faq-support (LEGACY - DEPRECATED)
-   * ========================================================================
-   *
-   * Legacy endpoint - redirects to new chat endpoint
-   * Kept for backward compatibility
-   *
-   * @deprecated Use POST /api/agents/user/booking-support/chat instead
-   */
   async getFAQSupport(req, res) {
     try {
       const { question, language = "en" } = req.query;
@@ -347,10 +195,8 @@ class AgentController {
       }
 
       logger.warn(
-        "⚠️ Legacy FAQ endpoint called - redirecting to new chat endpoint"
+        "Legacy FAQ endpoint called - redirecting to new chat endpoint"
       );
-
-      // Forward to new chat endpoint
       const response = await this.bookingSupportAgent.chat(question, "legacy");
 
       res.json({
@@ -358,7 +204,7 @@ class AgentController {
         question,
         answer: response.message,
         language: response.metadata.language.detected,
-        confidence: 0.8, // Legacy field
+        confidence: 0.8,
         note: "This endpoint is deprecated. Use POST /api/agents/user/booking-support/chat",
       });
     } catch (error) {
@@ -371,14 +217,6 @@ class AgentController {
     }
   }
 
-  /**
-   * ========================================================================
-   * POST /api/agents/user/event-request
-   * ========================================================================
-   *
-   * Event request assistant (Phase 1.3 - Future)
-   * Placeholder for now
-   */
   async processEventRequest(req, res) {
     try {
       const { requestText, userId } = req.body;
@@ -395,8 +233,6 @@ class AgentController {
         "processing request",
         `user: ${userId}`
       );
-
-      // Placeholder - Phase 1.3
       res.json({
         success: true,
         message: "Event request processing endpoint (Phase 1.3)",
@@ -413,25 +249,14 @@ class AgentController {
     }
   }
 
-  // ========================================================================
-  // ORGANIZER AGENTS (Placeholders for future phases)
-  // ========================================================================
-
-  /**
-   * POST /api/agents/organizer/plan-event
-   * Event planning agent (Phase 2.1)
-   */
   async planEvent(req, res) {
     try {
       const { eventDetails, organizerId } = req.body;
-
       logger.agent(
         "planning-agent",
         "planning event",
         `organizer: ${organizerId}`
       );
-
-      // Placeholder - Phase 2.1
       res.json({
         success: true,
         organizerId,
@@ -454,21 +279,14 @@ class AgentController {
     }
   }
 
-  /**
-   * GET /api/agents/organizer/dashboard/:organizerId
-   * Dashboard assistant (Phase 2.3)
-   */
   async getOrganizerDashboard(req, res) {
     try {
       const { organizerId } = req.params;
-
       logger.agent(
         "dashboard-assistant",
         "fetching dashboard",
         `organizer: ${organizerId}`
       );
-
-      // Placeholder - Phase 2.3
       res.json({
         success: true,
         organizerId,
@@ -490,21 +308,14 @@ class AgentController {
     }
   }
 
-  /**
-   * POST /api/agents/organizer/negotiate
-   * Negotiation agent (Phase 2.2)
-   */
   async negotiateBooking(req, res) {
     try {
       const { bookingId, offer, userId } = req.body;
-
       logger.agent(
         "negotiation-agent",
         "starting negotiation",
         `booking: ${bookingId}`
       );
-
-      // Placeholder - Phase 2.2
       res.json({
         success: true,
         bookingId,
@@ -523,19 +334,9 @@ class AgentController {
     }
   }
 
-  // ========================================================================
-  // ADMIN AGENTS (Placeholders for future phases)
-  // ========================================================================
-
-  /**
-   * GET /api/agents/admin/analytics
-   * Analytics agent (Phase 3.2)
-   */
   async getAnalytics(req, res) {
     try {
       logger.agent("analytics-agent", "generating analytics", "");
-
-      // Placeholder - Phase 3.2
       res.json({
         success: true,
         status: "pending_implementation",
@@ -555,21 +356,14 @@ class AgentController {
     }
   }
 
-  /**
-   * POST /api/agents/admin/sentiment
-   * Sentiment analysis agent (Phase 3.3)
-   */
   async analyzeSentiment(req, res) {
     try {
       const { reviewId, reviewText } = req.body;
-
       logger.agent(
         "feedback-sentiment",
         "analyzing sentiment",
         `review: ${reviewId}`
       );
-
-      // Placeholder - Phase 3.3
       res.json({
         success: true,
         reviewId,
@@ -588,21 +382,14 @@ class AgentController {
     }
   }
 
-  /**
-   * POST /api/agents/admin/fraud-check
-   * Fraud detection agent (Phase 3.1)
-   */
   async checkFraud(req, res) {
     try {
       const { bookingId } = req.body;
-
       logger.agent(
         "fraud-detection",
         "checking fraud",
         `booking: ${bookingId}`
       );
-
-      // Placeholder - Phase 3.1
       res.json({
         success: true,
         bookingId,
@@ -623,18 +410,8 @@ class AgentController {
     }
   }
 
-  // ========================================================================
-  // SYSTEM ROUTES
-  // ========================================================================
-
-  /**
-   * GET /api/agents/health
-   * Overall system health check
-   * Called by Backend to verify AI service is running
-   */
   async getHealth(req, res) {
     try {
-      // Check booking support agent specifically
       let bookingSupportStatus = "unknown";
       try {
         const health = this.bookingSupportAgent.checkHealth();
@@ -646,7 +423,6 @@ class AgentController {
       const isHealthy =
         bookingSupportStatus === "ready" ||
         bookingSupportStatus === "not_initialized";
-
       res.status(isHealthy ? 200 : 503).json({
         success: true,
         status: isHealthy ? "healthy" : "degraded",
@@ -668,10 +444,6 @@ class AgentController {
     }
   }
 
-  /**
-   * GET /api/agents/status
-   * Detailed system status with all agents
-   */
   async getSystemStatus(req, res) {
     try {
       res.json({
@@ -721,10 +493,6 @@ class AgentController {
     }
   }
 
-  /**
-   * GET /api/agents/list
-   * List all available agents
-   */
   async listAgents(req, res) {
     try {
       res.json({

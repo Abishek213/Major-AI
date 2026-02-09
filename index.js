@@ -50,12 +50,6 @@ try {
   };
 }
 
-/**
- * ============================================================================
- * AI AGENT SERVICE - MAIN SERVER
- * ============================================================================
- */
-
 const app = express();
 const PORT = process.env.PORT || 3002;
 
@@ -73,7 +67,6 @@ app.use(
 app.use(express.json({ limit: "10mb" }));
 app.use(express.urlencoded({ extended: true, limit: "10mb" }));
 
-// Simple request logging
 app.use((req, res, next) => {
   const start = Date.now();
   console.log(`➡️  ${req.method} ${req.path}`);
@@ -108,6 +101,7 @@ try {
 }
 
 // Legacy route
+app.post("/api/recommendations", agentController.postRecommendations);
 app.post("/recommendations", agentController.postRecommendations);
 
 // Root endpoint
@@ -150,10 +144,6 @@ app.use((error, req, res, next) => {
   });
 });
 
-// ============================================================================
-// SERVER INITIALIZATION - SIMPLIFIED VERSION
-// ============================================================================
-
 async function startServer() {
   console.log("=".repeat(50));
   console.log("🚀 Starting Eventa AI Agent Service...");
@@ -165,7 +155,7 @@ async function startServer() {
 
     if (!process.env.MONGODB_URI) {
       console.warn("⚠️  MONGODB_URI not set, using default");
-      process.env.MONGODB_URI = "mongodb://localhost:27017/eventa";
+      process.env.MONGODB_URI = "mongodb://localhost:27017/Eventa";
     }
 
     if (!process.env.OPENAI_API_KEY) {
@@ -236,8 +226,6 @@ async function startServer() {
   }
 }
 
-// Start the server
 startServer();
 
-// Export for testing
 module.exports = app;

@@ -14,7 +14,7 @@ class EventRecommendationAgent {
   // ─────────────────────────────────────────────────────────
   async getRecommendations(userId, limit = 10, userContext, candidateEvents) {
     try {
-      console.log(`Generating recommendations for user: ${userId}`); // fixed: was tagged template literal
+      console.log(`Generating recommendations for user: ${userId}`); // ✅ FIXED
 
       // If Backend sent no candidates, return empty.
       // The Backend will fall through to its own fallback — not our job.
