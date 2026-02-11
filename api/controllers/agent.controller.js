@@ -8,6 +8,28 @@ const negotiationAgent = new NegotiationAgent();
 negotiationAgent.initialize(); // Initialize the negotiation agent when the controller is loaded
 
 class AgentController {
+  constructor() {
+    this.bookingSupportAgent = BookingSupportAgent;
+    this.initialized = false;
+  }
+
+  async initialize() {
+    if (this.initialized) {
+      logger.info("Agent controller already initialized");
+      return;
+    }
+
+    try {
+      logger.info("Initializing AI agents...");
+      await this.bookingSupportAgent.initialize();
+      this.initialized = true;
+      logger.info("All AI agents initialized successfully");
+    } catch (error) {
+      logger.error("Error initializing agents:", error);
+      throw error;
+    }
+  }
+
   // ==================== USER AGENTS ====================
   async processEventRequest(req, res) {
     try {
@@ -29,7 +51,6 @@ class AgentController {
         naturalLanguage: naturalLanguage?.substring(0, 50),
         requestText: requestText?.substring(0, 50),
         userRequestText: userRequestText?.substring(0, 50),
-        // hasStructuredData: !!structuredData
       });
 
       // Validate required fields
@@ -50,14 +71,9 @@ class AgentController {
         });
       }
 
-      // Create the user request text
-      // const finalRequestText = userRequestText || 
-      //   `I need a ${structuredData.eventType} in ${structuredData.venue || 'somewhere'} with budget ${structuredData.budget || 'unspecified'}. ${structuredData.description || ''}`;
-
       console.log("🤖 AI Agent - Processing text:", userRequestText.substring(0, 100) + "...");
 
       // Import and use the agent
-      // const EventRequestAIAgent = require("../../agents/user-agents/event-request-assistant");
       const agent = new EventRequestAIAgent();
 
       const result = await agent.processRequest(userRequestText, userId);
@@ -65,26 +81,6 @@ class AgentController {
       if (!result.success) {
         console.error("⚠️ AI processing failed, returning fallback");
         return this.getFallbackResponse(userId, userRequestText);
-        // Return a fallback response instead of error
-        // return res.json({
-        //   success: true,
-        //   userId,
-        //   matchedOrganizers: [],
-        //   budgetAnalysis: {
-        //     userBudget: structuredData?.budget || 0,
-        //     industryAverage: 0,
-        //     feasibility: "unknown",
-        //     recommendedBudget: structuredData?.budget || 0
-        //   },
-        //   extractedEntities: {
-        //     eventType: structuredData?.eventType || "general",
-        //     location: structuredData?.venue || "unknown"
-        //   },
-        //   aiSuggestions: {},
-        //   timestamp: new Date().toISOString(),
-        //   agentVersion: "1.0.0-fallback",
-        //   note: "AI processing failed, returning fallback"
-        // });
       }
 
       console.log(`✅ AI processed. Event type: ${result.data.extractedEntities?.eventType}`);
@@ -110,7 +106,6 @@ class AgentController {
         req.body?.userId || "unknown",
         req.body?.naturalLanguage || req.body?.requestText || "Event request"
       );
-
     }
   }
 
@@ -132,7 +127,6 @@ class AgentController {
     locations.forEach(loc => {
       if (lowerText.includes(loc)) location = loc;
     });
-
 
     // Extract budget (simple regex)
     const budgetMatch = userRequest.match(/\b(\d{4,})\b/);
@@ -173,7 +167,6 @@ class AgentController {
       note: "Using rule-based extraction (OpenAI unavailable)"
     };
   }
-
 
   async getEventSuggestions(req, res) {
     try {
@@ -221,42 +214,161 @@ class AgentController {
     }
   }
 
-  // ==================== OTHER AGENT FUNCTIONS ====================
+  // ==================== BOOKING SUPPORT AGENT ====================
 
-  // Keep all your existing functions but make sure they're properly connected
-
-  async getUserRecommendations(req, res) {
+  async postRecommendations(req, res) {
     try {
-      const { userId } = req.params;
-      const { limit = 10 } = req.query;
+      const { userId, limit = 10, userContext, candidateEvents } = req.body;
 
-      logger.agent(
-        "event-recommendation",
-        "Fetching recommendations for user:",
-        userId
-      );
+      if (!userId) {
+        return res.status(400).json({
+          success: false,
+          error: "User ID is required in request body",
+        });
+      }
 
+      logger.agent("event-recommendation", "processing", `user: ${userId}`);
       const agent = new EventRecommendationAgent();
       const recommendations = await agent.getRecommendations(
         userId,
-        parseInt(limit)
+        parseInt(limit),
+        userContext,
+        candidateEvents
       );
 
-      logger.success(
+      logger.info(
         `Generated ${recommendations.length} recommendations for user ${userId}`
       );
 
       res.json({
         success: true,
-        data: recommendations,
+        recommendations: recommendations,
         count: recommendations.length,
         generated_at: new Date().toISOString(),
       });
     } catch (error) {
-      logger.error("Get recommendations error:", error.message);
+      logger.error("AI Recommendation error:", error);
       res.status(500).json({
         success: false,
         error: "Failed to generate recommendations",
+        message: error.message,
+      });
+    }
+  }
+
+  async chatBookingSupport(req, res) {
+    const startTime = Date.now();
+
+    try {
+      const { message, userId, sessionId } = req.body;
+
+      if (
+        !message ||
+        typeof message !== "string" ||
+        message.trim().length === 0
+      ) {
+        return res.status(400).json({
+          success: false,
+          error: "Message is required and must be a non-empty string",
+        });
+      }
+
+      const userIdentifier = userId || sessionId || "anonymous";
+      logger.agent(
+        "booking-support",
+        "received query",
+        `[${userIdentifier}]: ${message.substring(0, 50)}...`
+      );
+
+      const BookingSupportAgent = require("../../agents/user-agents/booking-support-agent");
+      const agentHealth = BookingSupportAgent.checkHealth();
+
+      if (agentHealth.status === "not_initialized") {
+        logger.info("Agent not initialized, initializing now...");
+        await BookingSupportAgent.initialize();
+      }
+
+      const response = await BookingSupportAgent.chat(message, userIdentifier);
+      const duration = Date.now() - startTime;
+      logger.info(
+        `Booking support responded in ${duration}ms [${userIdentifier}]`
+      );
+      res.json(response);
+    } catch (error) {
+      const duration = Date.now() - startTime;
+      logger.error(`Booking support error (${duration}ms):`, error);
+
+      res.status(500).json({
+        success: false,
+        error: "Failed to process booking support request",
+        message: error.message,
+        timestamp: new Date().toISOString(),
+      });
+    }
+  }
+
+  async clearChatHistory(req, res) {
+    try {
+      const { userId, sessionId } = req.body;
+      const userIdentifier = userId || sessionId;
+
+      if (!userIdentifier) {
+        return res.status(400).json({
+          success: false,
+          error: "userId or sessionId is required",
+        });
+      }
+
+      logger.agent(
+        "booking-support",
+        "clearing history",
+        `user: ${userIdentifier}`
+      );
+      const result =
+        this.bookingSupportAgent.clearConversationHistory(userIdentifier);
+      res.json(result);
+    } catch (error) {
+      logger.error("Clear chat history error:", error);
+      res.status(500).json({
+        success: false,
+        error: "Failed to clear chat history",
+        message: error.message,
+      });
+    }
+  }
+
+  async getBookingSupportHealth(req, res) {
+    try {
+      const health = this.bookingSupportAgent.checkHealth();
+      const statusCode = health.status === "ready" ? 200 : 503;
+      res.status(statusCode).json({
+        success: health.status === "ready",
+        ...health,
+      });
+    } catch (error) {
+      logger.error("Booking support health check error:", error);
+      res.status(503).json({
+        success: false,
+        status: "error",
+        error: error.message,
+      });
+    }
+  }
+
+  async getBookingSupportStats(req, res) {
+    try {
+      const stats = this.bookingSupportAgent.getStats();
+      res.json({
+        success: true,
+        stats,
+        timestamp: new Date().toISOString(),
+      });
+    } catch (error) {
+      logger.error("Booking support stats error:", error);
+      res.status(500).json({
+        success: false,
+        error: "Failed to get booking support stats",
+        message: error.message,
       });
     }
   }
@@ -269,95 +381,61 @@ class AgentController {
         return res.status(400).json({
           success: false,
           error: "Question parameter is required",
+          hint: "Use POST /api/agents/user/booking-support/chat for the new chat API",
         });
       }
 
-      logger.agent(
-        "booking-support-agent",
-        "Processing FAQ question:",
-        question
+      logger.warn(
+        "Legacy FAQ endpoint called - redirecting to new chat endpoint"
       );
-
-      const agent = new BookingSupportAgent();
-      const answer = await agent.getFAQAnswer(question, language);
+      const response = await this.bookingSupportAgent.chat(question, "legacy");
 
       res.json({
         success: true,
         question,
-        answer,
-        language,
-        confidence: answer.confidence || 0.8,
+        answer: response.message,
+        language: response.metadata.language.detected,
+        confidence: 0.8,
+        note: "This endpoint is deprecated. Use POST /api/agents/user/booking-support/chat",
       });
     } catch (error) {
-      logger.error("FAQ support error:", error.message);
+      logger.error("FAQ support error:", error);
       res.status(500).json({
         success: false,
         error: "Failed to process FAQ request",
+        message: error.message,
       });
     }
   }
-
-  // async processEventRequest(req, res) {
-  //   try {
-  //     const { requestText, userId } = req.body;
-
-  //     if (!requestText) {
-  //       return res.status(400).json({
-  //         success: false,
-  //         error: "Request text is required",
-  //       });
-  //     }
-
-  //     logger.agent(
-  //       "event-request-assistant",
-  //       "Processing event request from user:",
-  //       userId
-  //     );
-
-  //     // This will be implemented when event-request-assistant is created
-  //     res.json({
-  //       success: true,
-  //       message: "Event request processing endpoint",
-  //       request: requestText,
-  //       status: "pending_implementation",
-  //     });
-  //   } catch (error) {
-  //     logger.error("Event request error:", error.message);
-  //     res.status(500).json({
-  //       success: false,
-  //       error: "Failed to process event request",
-  //     });
-  //   }
-  // }
 
   // ==================== ORGANIZER AGENTS ====================
 
   async planEvent(req, res) {
     try {
       const { eventDetails, organizerId } = req.body;
-
       logger.agent(
         "planning-agent",
-        "Planning event for organizer:",
-        organizerId
+        "planning event",
+        `organizer: ${organizerId}`
       );
-
-      // Placeholder - will be implemented
       res.json({
         success: true,
         organizerId,
         eventDetails,
         plan: {
-          timeline: "Pending implementation",
-          budget: "Pending implementation",
+          status: "pending_implementation",
+          phase: "2.1",
+          timeline: "TBD",
+          budget: "TBD",
           tasks: [],
         },
       });
     } catch (error) {
-      logger.error("Plan event error:", error.message);
+      logger.error("Plan event error:", error);
       res.status(500).json({
         success: false,
         error: "Failed to plan event",
+        message: error.message,
       });
     }
   }
@@ -365,29 +443,28 @@ class AgentController {
   async getOrganizerDashboard(req, res) {
     try {
       const { organizerId } = req.params;
-
       logger.agent(
         "dashboard-assistant",
-        "Fetching dashboard for organizer:",
-        organizerId
+        "fetching dashboard",
+        `organizer: ${organizerId}`
       );
-
-      // Placeholder - will be implemented
       res.json({
         success: true,
         organizerId,
         dashboard: {
-          upcoming_events: 5,
-          total_bookings: 120,
-          revenue: 250000,
-          performance_metrics: {},
+          status: "pending_implementation",
+          phase: "2.3",
+          upcoming_events: 0,
+          total_bookings: 0,
+          revenue: 0,
         },
       });
     } catch (error) {
-      logger.error("Organizer dashboard error:", error.message);
+      logger.error("Organizer dashboard error:", error);
       res.status(500).json({
         success: false,
         error: "Failed to fetch dashboard data",
+        message: error.message,
       });
     }
   }
@@ -395,26 +472,126 @@ class AgentController {
   async negotiateBooking(req, res) {
     try {
       const { bookingId, offer, userId } = req.body;
-
       logger.agent(
         "negotiation-agent",
-        "Starting negotiation for booking:",
-        bookingId
+        "starting negotiation",
+        `booking: ${bookingId}`
       );
-
-      // Placeholder - will be implemented
       res.json({
         success: true,
         bookingId,
+        status: "pending_implementation",
+        phase: "2.2",
         initial_offer: offer,
-        counter_offer: offer * 0.9, // 10% discount
-        status: "negotiating",
+        counter_offer: null,
       });
     } catch (error) {
-      logger.error("Negotiation error:", error.message);
+      logger.error("Negotiation error:", error);
       res.status(500).json({
         success: false,
         error: "Failed to process negotiation",
+        message: error.message,
+      });
+    }
+  }
+
+  // ==================== NEGOTIATION AGENT FUNCTIONS ====================
+
+  async startEventRequestNegotiation(req, res) {
+    try {
+      const { eventRequestId, organizerId, organizerOffer, organizerMessage } = req.body;
+      
+      console.log("🤖 Starting negotiation for event request:", eventRequestId);
+      
+      const result = await negotiationAgent.startEventRequestNegotiation(
+        eventRequestId,
+        organizerId,
+        organizerOffer,
+        organizerMessage
+      );
+      
+      res.json(result);
+    } catch (error) {
+      console.error("Failed to start negotiation:", error.message);
+      res.status(500).json({
+        success: false,
+        error: error.message
+      });
+    }
+  }
+
+  async processUserCounterOffer(req, res) {
+    try {
+      const { negotiationId, userOffer, userMessage } = req.body;
+      const userId = req.user?._id || 'user_' + Date.now(); // From auth
+      
+      console.log("🤖 Processing user counter:", { negotiationId, userOffer });
+      
+      const result = await negotiationAgent.processUserCounter(
+        negotiationId,
+        userOffer,
+        userMessage
+      );
+      
+      res.json(result);
+    } catch (error) {
+      console.error("Failed to process counter:", error.message);
+      res.status(500).json({
+        success: false,
+        error: error.message
+      });
+    }
+  }
+
+  async getNegotiationStatus(req, res) {
+    try {
+      const { negotiationId } = req.params;
+      
+      const result = await negotiationAgent.getNegotiationStatus(negotiationId);
+      
+      res.json(result);
+    } catch (error) {
+      console.error("Failed to get status:", error.message);
+      res.status(500).json({
+        success: false,
+        error: error.message
+      });
+    }
+  }
+
+  async acceptNegotiationOffer(req, res) {
+    try {
+      const { negotiationId } = req.params;
+      const userId = req.user?._id;
+      
+      const result = await negotiationAgent.acceptOffer(negotiationId, userId);
+      
+      res.json(result);
+    } catch (error) {
+      console.error("Failed to accept offer:", error.message);
+      res.status(500).json({
+        success: false,
+        error: error.message
+      });
+    }
+  }
+
+  async getEventPriceAnalysis(req, res) {
+    try {
+      const { eventType, location, budget } = req.query;
+      
+      const result = await negotiationAgent.getPriceAnalysis(
+        eventType,
+        location,
+        parseFloat(budget)
+      );
+      
+      res.json(result);
+    } catch (error) {
+      console.error("Failed to analyze price:", error.message);
+      res.status(500).json({
+        success: false,
+        error: error.message
       });
     }
   }
@@ -423,28 +600,22 @@ class AgentController {
 
   async getAnalytics(req, res) {
     try {
-      logger.agent("analytics-agent", "Generating analytics report");
-
-      // Placeholder - will be implemented
+      logger.agent("analytics-agent", "generating analytics", "");
       res.json({
         success: true,
+        status: "pending_implementation",
+        phase: "3.2",
         analytics: {
-          platform_overview: {
-            active_users: 1500,
-            total_events: 89,
-            bookings_today: 42,
-          },
-          revenue_analytics: {
-            total_revenue: 1250000,
-            monthly_growth: 15,
-          },
+          platform_overview: {},
+          revenue_analytics: {},
         },
       });
     } catch (error) {
-      logger.error("Analytics error:", error.message);
+      logger.error("Analytics error:", error);
       res.status(500).json({
         success: false,
         error: "Failed to generate analytics",
+        message: error.message,
       });
     }
   }
@@ -452,26 +623,25 @@ class AgentController {
   async analyzeSentiment(req, res) {
     try {
       const { reviewId, reviewText } = req.body;
-
       logger.agent(
         "feedback-sentiment",
-        "Analyzing sentiment for review:",
-        reviewId
+        "analyzing sentiment",
+        `review: ${reviewId}`
       );
-
-      // Placeholder - will be implemented
       res.json({
         success: true,
         reviewId,
-        sentiment_score: 0.8,
-        sentiment: "positive",
-        detected_issues: [],
+        status: "pending_implementation",
+        phase: "3.3",
+        sentiment_score: null,
+        sentiment: null,
       });
     } catch (error) {
-      logger.error("Sentiment analysis error:", error.message);
+      logger.error("Sentiment analysis error:", error);
       res.status(500).json({
         success: false,
         error: "Failed to analyze sentiment",
+        message: error.message,
       });
     }
   }
@@ -479,53 +649,109 @@ class AgentController {
   async checkFraud(req, res) {
     try {
       const { bookingId } = req.body;
-
-      logger.agent("fraud-detection", "Checking fraud for booking:", bookingId);
-
-      // Placeholder - will be implemented
+      logger.agent(
+        "fraud-detection",
+        "checking fraud",
+        `booking: ${bookingId}`
+      );
       res.json({
         success: true,
         bookingId,
+        status: "pending_implementation",
+        phase: "3.1",
         fraudCheck: {
-          riskScore: 0.1,
-          status: "clean",
-          flaggedIssues: [],
+          riskScore: null,
+          status: "not_checked",
         },
       });
     } catch (error) {
-      logger.error("Fraud check error:", error.message);
+      logger.error("Fraud check error:", error);
       res.status(500).json({
         success: false,
         error: "Failed to check fraud",
+        message: error.message,
       });
     }
   }
 
-  // ==================== SYSTEM ROUTES ====================
+  // ==================== SYSTEM STATUS & HEALTH ====================
+
+  async getHealth(req, res) {
+    try {
+      let bookingSupportStatus = "unknown";
+      try {
+        const health = this.bookingSupportAgent.checkHealth();
+        bookingSupportStatus = health.status;
+      } catch (error) {
+        bookingSupportStatus = "error";
+      }
+
+      const isHealthy =
+        bookingSupportStatus === "ready" ||
+        bookingSupportStatus === "not_initialized";
+      res.status(isHealthy ? 200 : 503).json({
+        success: true,
+        status: isHealthy ? "healthy" : "degraded",
+        service: "AI Agent Service",
+        version: "1.0.0",
+        timestamp: new Date().toISOString(),
+        components: {
+          bookingSupport: bookingSupportStatus,
+        },
+      });
+    } catch (error) {
+      logger.error("Health check error:", error);
+      res.status(503).json({
+        success: false,
+        status: "unhealthy",
+        error: error.message,
+        timestamp: new Date().toISOString(),
+      });
+    }
+  }
 
   async getSystemStatus(req, res) {
     try {
       res.json({
         success: true,
-        system: "e-VENTA AI Agent System",
+        system: "Eventa AI Agent System",
         status: "operational",
         version: "1.0.0",
         timestamp: new Date().toISOString(),
+        phases: {
+          current: "Phase 1.2 - Booking Support Agent",
+          completed: ["Phase 1.1 - Event Recommendation"],
+          inProgress: ["Phase 1.2 - Booking Support Agent"],
+          upcoming: [
+            "Phase 1.3 - Event Request Assistant",
+            "Phase 2.x - Organizer Agents",
+            "Phase 3.x - Admin Agents",
+          ],
+        },
         agents: {
           user: [
-            "event-recommendation",
-            "booking-support-agent",
-            "event-request-assistant",
+            { name: "event-recommendation", status: "active", phase: "1.1" },
+            { name: "booking-support-agent", status: "active", phase: "1.2" },
+            {
+              name: "event-request-assistant",
+              status: "planned",
+              phase: "1.3",
+            },
           ],
           organizer: [
-            "dashboard-assistant",
-            "negotiation-agent",
-            "planning-agent",
+            { name: "planning-agent", status: "planned", phase: "2.1" },
+            { name: "negotiation-agent", status: "planned", phase: "2.2" },
+            { name: "dashboard-assistant", status: "planned", phase: "2.3" },
           ],
-          admin: ["analytics-agent", "feedback-sentiment", "fraud-detection"],
+          admin: [
+            { name: "fraud-detection", status: "planned", phase: "3.1" },
+            { name: "analytics-agent", status: "planned", phase: "3.2" },
+            { name: "feedback-sentiment", status: "planned", phase: "3.3" },
+          ],
         },
       });
     } catch (error) {
+      logger.error("System status error:", error);
       res.status(500).json({
         success: false,
         error: error.message,
@@ -535,131 +761,83 @@ class AgentController {
 
   async listAgents(req, res) {
     try {
-      // This would fetch from database in production
       res.json({
         success: true,
         agents: [
-          { name: "event-recommendation", type: "user", status: "active" },
-          { name: "booking-support-agent", type: "user", status: "active" },
-          { name: "dashboard-assistant", type: "organizer", status: "active" },
-          { name: "analytics-agent", type: "admin", status: "active" },
+          {
+            name: "event-recommendation",
+            type: "user",
+            status: "active",
+            phase: "1.1",
+            description: "Recommends events based on user preferences",
+          },
+          {
+            name: "booking-support-agent",
+            type: "user",
+            status: "active",
+            phase: "1.2",
+            description: "24/7 FAQ support with multilingual capabilities",
+          },
+          {
+            name: "event-request-assistant",
+            type: "user",
+            status: "planned",
+            phase: "1.3",
+            description: "Helps users create event requests",
+          },
+          {
+            name: "planning-agent",
+            type: "organizer",
+            status: "planned",
+            phase: "2.1",
+            description: "Automated event planning assistance",
+          },
+          {
+            name: "negotiation-agent",
+            type: "organizer",
+            status: "planned",
+            phase: "2.2",
+            description: "Price negotiation facilitation",
+          },
+          {
+            name: "dashboard-assistant",
+            type: "organizer",
+            status: "planned",
+            phase: "2.3",
+            description: "Natural language dashboard queries",
+          },
+          {
+            name: "fraud-detection",
+            type: "admin",
+            status: "planned",
+            phase: "3.1",
+            description: "Anomaly and fraud detection",
+          },
+          {
+            name: "analytics-agent",
+            type: "admin",
+            status: "planned",
+            phase: "3.2",
+            description: "Platform analytics and insights",
+          },
+          {
+            name: "feedback-sentiment",
+            type: "admin",
+            status: "planned",
+            phase: "3.3",
+            description: "Review sentiment analysis",
+          },
         ],
+        timestamp: new Date().toISOString(),
       });
     } catch (error) {
+      logger.error("List agents error:", error);
       res.status(500).json({
         success: false,
         error: error.message,
       });
     }
   }
-
-
-
-  // organizer side
-  async startEventRequestNegotiation(req, res) {
-  try {
-    const { eventRequestId, organizerId, organizerOffer, organizerMessage } = req.body;
-    
-    console.log("🤖 Starting negotiation for event request:", eventRequestId);
-    
-    const result = await negotiationAgent.startEventRequestNegotiation(
-      eventRequestId,
-      organizerId,
-      organizerOffer,
-      organizerMessage
-    );
-    
-    res.json(result);
-  } catch (error) {
-    console.error("Failed to start negotiation:", error.message);
-    res.status(500).json({
-      success: false,
-      error: error.message
-    });
-  }
-}
-
-// ✅ NEW: User makes counter-offer
-async processUserCounterOffer(req, res) {
-  try {
-    const { negotiationId, userOffer, userMessage } = req.body;
-    const userId = req.user?._id || 'user_' + Date.now(); // From auth
-    
-    console.log("🤖 Processing user counter:", { negotiationId, userOffer });
-    
-    const result = await negotiationAgent.processUserCounter(
-      negotiationId,
-      userOffer,
-      userMessage
-    );
-    
-    res.json(result);
-  } catch (error) {
-    console.error("Failed to process counter:", error.message);
-    res.status(500).json({
-      success: false,
-      error: error.message
-    });
-  }
-}
-
-// ✅ NEW: Get negotiation status
-async getNegotiationStatus(req, res) {
-  try {
-    const { negotiationId } = req.params;
-    
-    const result = await negotiationAgent.getNegotiationStatus(negotiationId);
-    
-    res.json(result);
-  } catch (error) {
-    console.error("Failed to get status:", error.message);
-    res.status(500).json({
-      success: false,
-      error: error.message
-    });
-  }
-}
-
-// ✅ NEW: Accept offer
-async acceptNegotiationOffer(req, res) {
-  try {
-    const { negotiationId } = req.params;
-    const userId = req.user?._id;
-    
-    const result = await negotiationAgent.acceptOffer(negotiationId, userId);
-    
-    res.json(result);
-  } catch (error) {
-    console.error("Failed to accept offer:", error.message);
-    res.status(500).json({
-      success: false,
-      error: error.message
-    });
-  }
-}
-
-// ✅ NEW: Get price analysis
-async getEventPriceAnalysis(req, res) {
-  try {
-    const { eventType, location, budget } = req.query;
-    
-    const result = await negotiationAgent.getPriceAnalysis(
-      eventType,
-      location,
-      parseFloat(budget)
-    );
-    
-    res.json(result);
-  } catch (Error) {
-    console.error("Failed to analyze price:", error.message);
-    res.status(500).json({
-      success: false,
-      error: error.message
-    });
-  }
-}
-
-
 }
 
 module.exports = new AgentController();

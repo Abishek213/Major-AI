@@ -5,7 +5,7 @@
 const {
   EventRecommendationAgent,
 } = require("../../agents/user-agents/event-recommendation");
-const { getLogger } = require("../../shared/utils/logger");
+const { getLogger } = require("../../config/logger");
 const { createVectorStore } = require("../../shared/utils/vector-store");
 
 // Mock dependencies
