@@ -1,7 +1,10 @@
 const logger = require('../../../config/logger');
+const langchainConfig = require('../../../config/langchain');
 
 class BudgetOptimizer {
   constructor() {
+    this.llmEnabled = false; // Will be set when optimize is called
+    
     this.categoryTemplates = {
       'venue': {
         min_percentage: 0.25,
@@ -70,38 +73,149 @@ class BudgetOptimizer {
     };
   }
 
-  async optimizeBudget(totalBudget, eventType, attendees, location) {
+  /**
+   * Main optimization function - now with LLM support
+   */
+  async optimizeBudget(totalBudget, eventType, attendees, location, llmEnabled = false) {
     try {
-      logger.agent('BudgetOptimizer', `Optimizing budget for ${eventType} with ${attendees} attendees`);
+      this.llmEnabled = llmEnabled;
+      logger.agent('BudgetOptimizer', `Optimizing budget for ${eventType} with ${attendees} attendees (LLM: ${llmEnabled})`);
       
-      // Get event template categories
+      // Step 1: Get event categories
       const eventCategories = this.getEventCategories(eventType);
       
-      // Calculate base allocation
+      // Step 2: Calculate base allocation (algorithmic)
       const baseAllocation = this.calculateBaseAllocation(totalBudget, eventCategories);
       
-      // Apply location adjustments
+      // Step 3: Apply location adjustments
       const locationAdjusted = this.applyLocationAdjustments(baseAllocation, location);
       
-      // Apply scale adjustments based on attendees
+      // Step 4: Apply scale adjustments based on attendees
       const scaleAdjusted = this.applyScaleAdjustments(locationAdjusted, attendees);
       
-      // Optimize each category
+      // Step 5: Optimize each category (algorithmic)
       const optimized = this.optimizeCategories(scaleAdjusted, eventType, attendees, location);
       
-      // Calculate summary
+      // Step 6: Calculate summary
       const summary = this.calculateSummary(optimized, totalBudget);
+      
+      // Step 7: Generate base recommendations (algorithmic)
+      const baseRecommendations = this.generateBudgetRecommendations(optimized, totalBudget);
+      
+      // Step 8: Enhance with LLM insights (if available)
+      const enhancedRecommendations = await this.enhanceRecommendationsWithLLM(
+        optimized,
+        totalBudget,
+        eventType,
+        attendees,
+        location,
+        baseRecommendations
+      );
       
       return {
         summary: summary,
         breakdown: optimized,
-        recommendations: this.generateBudgetRecommendations(optimized, totalBudget)
+        recommendations: enhancedRecommendations,
+        metadata: {
+          llm_enhanced: this.llmEnabled,
+          optimization_method: this.llmEnabled ? 'hybrid' : 'algorithmic'
+        }
       };
     } catch (error) {
       logger.error(`Budget optimization failed: ${error.message}`);
       return this.getFallbackBudget(totalBudget, eventType);
     }
   }
+
+  /**
+   * Enhance recommendations using LLM
+   */
+  async enhanceRecommendationsWithLLM(breakdown, totalBudget, eventType, attendees, location, baseRecommendations) {
+    if (!this.llmEnabled) {
+      return baseRecommendations;
+    }
+    
+    try {
+      const model = langchainConfig.getChatModel({ temperature: 0.7, maxTokens: 500 });
+      const systemPrompt = langchainConfig.createAgentPrompt('budget-optimization');
+      
+      // Build context for LLM
+      const budgetContext = this.buildBudgetContext(breakdown, totalBudget, eventType, attendees, location);
+      
+      const query = `Analyze this ${eventType} budget and provide 3 specific cost-saving recommendations:
+
+Budget: NPR ${totalBudget.toLocaleString()}
+Location: ${location}
+Attendees: ${attendees}
+
+Top Categories:
+${Object.entries(breakdown)
+  .sort(([,a], [,b]) => b.amount - a.amount)
+  .slice(0, 5)
+  .map(([cat, data]) => `- ${cat}: NPR ${data.amount.toFixed(0)} (${data.percentage.toFixed(1)}%)`)
+  .join('\n')}
+
+For each recommendation:
+1. Specific category to target
+2. Actionable strategy (Nepal-specific if possible)
+3. Realistic savings amount in NPR
+
+Keep responses concise and practical.`;
+      
+      const messages = langchainConfig.buildMessageChain(
+        systemPrompt,
+        [],
+        query,
+        budgetContext
+      );
+      
+      const response = await model.invoke(messages);
+      
+      // Combine base algorithmic recommendations with LLM insights
+      return [
+        ...baseRecommendations,
+        {
+          type: 'ai_insight',
+          priority: 'high',
+          message: 'AI-Generated Optimization Insights',
+          details: response.content,
+          source: 'LLM'
+        }
+      ];
+      
+    } catch (error) {
+      logger.error(`LLM enhancement failed: ${error.message}`);
+      // Return base recommendations on failure
+      return baseRecommendations;
+    }
+  }
+
+  /**
+   * Build detailed context for LLM
+   */
+  buildBudgetContext(breakdown, totalBudget, eventType, attendees, location) {
+    const summary = this.calculateSummary(breakdown, totalBudget);
+    
+    return `
+Event Type: ${eventType}
+Total Budget: NPR ${totalBudget.toLocaleString()}
+Location: ${location} (Nepal)
+Attendees: ${attendees}
+Cost per Attendee: NPR ${(totalBudget / attendees).toFixed(0)}
+
+Budget Allocation:
+${Object.entries(breakdown)
+  .map(([cat, data]) => `${cat}: NPR ${data.amount.toFixed(0)} (${data.percentage.toFixed(1)}%) - Potential savings: NPR ${data.potential_savings.toFixed(0)}`)
+  .join('\n')}
+
+Top 3 Largest Expenses:
+${summary.top_categories.map(cat => `${cat.name}: ${cat.percentage.toFixed(1)}%`).join(', ')}
+
+Context: This is a budget for an event in Nepal. Consider local market rates, cultural factors, and practical cost-saving strategies.
+`;
+  }
+
+  // ========== EXISTING ALGORITHMIC METHODS (kept as-is) ==========
 
   getEventCategories(eventType) {
     const eventCategories = {
@@ -118,14 +232,11 @@ class BudgetOptimizer {
 
   calculateBaseAllocation(totalBudget, categories) {
     const allocation = {};
-    
-    // Distribute budget based on category templates
     let remainingPercentage = 1.0;
     
     categories.forEach(category => {
       const template = this.categoryTemplates[category];
       if (template) {
-        // Use average of min and max
         const percentage = (template.min_percentage + template.max_percentage) / 2;
         allocation[category] = {
           amount: totalBudget * percentage,
@@ -138,7 +249,6 @@ class BudgetOptimizer {
       }
     });
     
-    // Distribute remaining to contingency
     if (allocation.contingency) {
       allocation.contingency.amount += totalBudget * remainingPercentage;
       allocation.contingency.percentage += remainingPercentage;
@@ -152,13 +262,12 @@ class BudgetOptimizer {
     
     const adjusted = {};
     Object.entries(allocation).forEach(([category, data]) => {
-      // Some categories are more location-sensitive than others
       let categoryMultiplier = multiplier;
       
       if (['venue', 'catering', 'music'].includes(category)) {
-        categoryMultiplier = multiplier * 1.1; // More sensitive to location
+        categoryMultiplier = multiplier * 1.1;
       } else if (['materials', 'equipment'].includes(category)) {
-        categoryMultiplier = multiplier * 0.9; // Less sensitive
+        categoryMultiplier = multiplier * 0.9;
       }
       
       adjusted[category] = {
@@ -178,20 +287,19 @@ class BudgetOptimizer {
     Object.entries(allocation).forEach(([category, data]) => {
       let scaleMultiplier = scale;
       
-      // Different categories scale differently
       if (['venue', 'catering'].includes(category)) {
-        scaleMultiplier = Math.pow(scale, 0.8); // Economies of scale
+        scaleMultiplier = Math.pow(scale, 0.8);
       } else if (['materials', 'equipment'].includes(category)) {
-        scaleMultiplier = scale; // Linear scaling
+        scaleMultiplier = scale;
       } else if (['speakers', 'artists'].includes(category)) {
-        scaleMultiplier = 1; // Fixed cost
+        scaleMultiplier = 1;
       }
       
       adjusted[category] = {
         ...data,
         amount: data.amount * scaleMultiplier,
         scale_multiplier: scaleMultiplier,
-        per_attendee_cost: data.amount / attendees
+        per_attendee_cost: (data.amount * scaleMultiplier) / attendees
       };
     });
     
@@ -199,12 +307,11 @@ class BudgetOptimizer {
   }
 
   calculateScaleFactor(attendees) {
-    // Non-linear scaling: costs increase slower than attendees
     if (attendees <= 50) return 1.0;
     if (attendees <= 100) return 1.5;
     if (attendees <= 500) return 2.5;
     if (attendees <= 1000) return 3.5;
-    return 4.0; // 1000+ attendees
+    return 4.0;
   }
 
   optimizeCategories(allocation, eventType, attendees, location) {
@@ -230,47 +337,93 @@ class BudgetOptimizer {
       tradeoffs: []
     };
     
-    // Category-specific optimization logic
     switch (category) {
       case 'venue':
-        optimizations.potential_savings = data.amount * 0.1; // 10% potential savings
+        optimizations.potential_savings = data.amount * 0.1;
         optimizations.recommendations = [
-          'Consider weekday rates',
-          'Book 3+ months in advance',
-          'Negotiate package deals with catering'
+          'Consider weekday rates (20-30% cheaper)',
+          'Book 3+ months in advance for early bird discounts',
+          'Negotiate package deals with catering included'
         ];
+        optimizations.tradeoffs = ['Weekday events may have lower attendance'];
         break;
         
       case 'catering':
         optimizations.potential_savings = data.amount * 0.15;
         optimizations.recommendations = [
-          'Buffet style is 30% cheaper than plated',
-          'Local cuisine saves 20% vs international',
-          'Limit beverage options to reduce costs'
+          'Buffet style saves 30% vs plated service',
+          'Local Nepali cuisine is 20% cheaper than continental',
+          'Limit beverage variety to reduce waste and cost',
+          'Consider vegetarian-focused menu (15% savings)'
         ];
+        optimizations.tradeoffs = ['Limited menu may not suit all guests'];
         break;
         
       case 'audio_visual':
         optimizations.potential_savings = data.amount * 0.2;
         optimizations.recommendations = [
-          'Rent instead of buying equipment',
-          'Use venue-provided AV when possible',
-          'Hire local technicians'
+          'Rent equipment instead of buying',
+          'Use venue-provided AV systems when available',
+          'Hire local technicians (40% cheaper than agencies)',
+          'DIY simple setups with volunteer help'
         ];
+        optimizations.tradeoffs = ['DIY requires technical knowledge'];
         break;
         
       case 'marketing':
         optimizations.potential_savings = data.amount * 0.25;
         optimizations.recommendations = [
-          'Focus on digital marketing (60% cheaper)',
-          'Use social media influencers',
-          'Early bird discounts drive word-of-mouth'
+          'Focus on digital marketing (60% cheaper than print)',
+          'Leverage social media and influencer partnerships',
+          'Early bird discounts drive organic word-of-mouth',
+          'Use free tools: Canva, Facebook Events, WhatsApp'
         ];
+        optimizations.tradeoffs = ['Digital reach may miss older demographics'];
         break;
+        
+      case 'photography':
+        optimizations.potential_savings = data.amount * 0.12;
+        optimizations.recommendations = [
+          'Hire emerging photographers (30% cheaper)',
+          'Limit hours instead of full-day coverage',
+          'Request digital-only delivery (no albums)',
+          'Use event attendees for candid shots'
+        ];
+        optimizations.tradeoffs = ['Less experience may affect quality'];
+        break;
+        
+      case 'decorations':
+        optimizations.potential_savings = data.amount * 0.18;
+        optimizations.recommendations = [
+          'DIY decorations with team/family help',
+          'Rent instead of buying (flowers, backdrops)',
+          'Use venue\'s existing decor elements',
+          'Seasonal flowers are 40% cheaper'
+        ];
+        optimizations.tradeoffs = ['DIY requires time and effort'];
+        break;
+        
+      case 'security':
+        optimizations.potential_savings = data.amount * 0.08;
+        optimizations.recommendations = [
+          'Hire local security personnel vs agencies',
+          'Use volunteer staff for crowd management',
+          'Coordinate with venue security services'
+        ];
+        optimizations.tradeoffs = ['Volunteers may lack professional training'];
+        break;
+        
+      default:
+        optimizations.potential_savings = data.amount * 0.1;
+        optimizations.recommendations = [
+          'Compare multiple vendor quotes',
+          'Negotiate bulk/package discounts',
+          'Consider off-peak timing for better rates'
+        ];
     }
     
-    // Calculate recommended amount (10-20% below current)
-    const savingPercentage = 0.15 + Math.random() * 0.05; // 15-20%
+    // Calculate recommended amount (with savings)
+    const savingPercentage = optimizations.potential_savings / data.amount;
     optimizations.recommended_amount = data.amount * (1 - savingPercentage);
     
     return optimizations;
@@ -282,7 +435,6 @@ class BudgetOptimizer {
     
     const potentialSavings = allocated - optimized;
     
-    // Identify top 3 cost categories
     const topCategories = Object.entries(breakdown)
       .sort(([,a], [,b]) => b.amount - a.amount)
       .slice(0, 3)
@@ -314,13 +466,13 @@ class BudgetOptimizer {
     if (summary.savings_percentage > 15) {
       recommendations.push({
         type: 'success',
-        message: `Good budget allocation! You can save ${summary.savings_percentage.toFixed(1)}% with optimizations.`,
+        message: `Good optimization potential! You can save ${summary.savings_percentage.toFixed(1)}% (NPR ${summary.potential_savings.toFixed(0)}) with smart choices.`,
         priority: 'low'
       });
     } else if (summary.savings_percentage > 5) {
       recommendations.push({
         type: 'info',
-        message: `Moderate optimization potential of ${summary.savings_percentage.toFixed(1)}%.`,
+        message: `Moderate optimization potential of ${summary.savings_percentage.toFixed(1)}% (NPR ${summary.potential_savings.toFixed(0)}).`,
         priority: 'medium'
       });
     } else {
@@ -331,16 +483,28 @@ class BudgetOptimizer {
       });
     }
     
-    // Category-specific recommendations
+    // Category-specific warnings
     summary.top_categories.forEach(category => {
       if (category.percentage > 40) {
         recommendations.push({
           type: 'warning',
-          message: `${category.name} is ${category.percentage.toFixed(1)}% of total budget - high concentration risk.`,
+          message: `${category.name} is ${category.percentage.toFixed(1)}% of total budget - high concentration risk. Consider diversifying expenses.`,
           priority: 'high'
         });
       }
     });
+    
+    // Find highest savings potential
+    const highestSavings = Object.entries(breakdown)
+      .sort(([,a], [,b]) => b.potential_savings - a.potential_savings)[0];
+    
+    if (highestSavings) {
+      recommendations.push({
+        type: 'info',
+        message: `Focus on ${highestSavings[0]}: Potential to save NPR ${highestSavings[1].potential_savings.toFixed(0)} here.`,
+        priority: 'medium'
+      });
+    }
     
     return recommendations;
   }
@@ -361,7 +525,8 @@ class BudgetOptimizer {
         amount: amount,
         percentage: (amount / totalBudget) * 100,
         optimized_amount: amount * 0.9,
-        potential_savings: amount * 0.1
+        potential_savings: amount * 0.1,
+        recommendations: ['Compare multiple vendors', 'Negotiate package deals']
       };
     });
     
@@ -383,10 +548,17 @@ class BudgetOptimizer {
         type: 'info',
         message: 'Using simplified budget allocation',
         priority: 'medium'
-      }]
+      }],
+      metadata: {
+        llm_enhanced: false,
+        optimization_method: 'fallback'
+      }
     };
   }
 
+  /**
+   * Analyze historical data for better predictions (future enhancement)
+   */
   async analyzeHistoricalData(historicalEvents) {
     logger.agent('BudgetOptimizer', 'Analyzing historical event data');
     
@@ -397,7 +569,6 @@ class BudgetOptimizer {
       best_practices: []
     };
     
-    // Analyze by event type
     const eventsByType = {};
     historicalEvents.forEach(event => {
       if (!eventsByType[event.type]) {
@@ -418,15 +589,16 @@ class BudgetOptimizer {
       };
     });
     
-    // Identify common overspend categories
     const overspendCategories = new Map();
     historicalEvents.forEach(event => {
-      Object.entries(event.category_spending).forEach(([category, { planned, actual }]) => {
-        if (actual > planned) {
-          const overspend = actual - planned;
-          overspendCategories.set(category, (overspendCategories.get(category) || 0) + overspend);
-        }
-      });
+      if (event.category_spending) {
+        Object.entries(event.category_spending).forEach(([category, { planned, actual }]) => {
+          if (actual > planned) {
+            const overspend = actual - planned;
+            overspendCategories.set(category, (overspendCategories.get(category) || 0) + overspend);
+          }
+        });
+      }
     });
     
     analysis.common_overspends = Array.from(overspendCategories.entries())
@@ -438,7 +610,6 @@ class BudgetOptimizer {
         average_per_event: total / historicalEvents.length
       }));
     
-    // Extract best practices
     analysis.best_practices = this.extractBestPractices(historicalEvents);
     
     return analysis;
@@ -452,15 +623,16 @@ class BudgetOptimizer {
     if (successfulEvents.length === 0) return [];
     
     const practices = [];
-    
-    // Common practices among successful events
     const commonCategories = new Set();
+    
     successfulEvents.forEach(event => {
-      Object.entries(event.category_spending).forEach(([category, data]) => {
-        if (data.actual <= data.planned * 0.9) { // Under budget by 10%
-          commonCategories.add(category);
-        }
-      });
+      if (event.category_spending) {
+        Object.entries(event.category_spending).forEach(([category, data]) => {
+          if (data.actual <= data.planned * 0.9) {
+            commonCategories.add(category);
+          }
+        });
+      }
     });
     
     if (commonCategories.size > 0) {
