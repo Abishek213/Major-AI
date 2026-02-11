@@ -1,270 +1,295 @@
-const logger = require('../../../config/logger');
+const { OpenAI } = require('openai');
+const { logger } = require('../../../shared/utils/logger');
 
-class NER {
-  constructor() {
-    this.eventTypes = [
-      'concert', 'conference', 'workshop', 'seminar', 'festival',
-      'wedding', 'birthday', 'party', 'meeting', 'exhibition',
-      'sports', 'cultural', 'religious', 'business', 'networking'
-    ];
-    
-    this.locationKeywords = [
-      'kathmandu', 'pokhara', 'lalitpur', 'bhaktapur', 'biratnagar',
-      'butwal', 'dharan', 'nepalgunj', 'birgunj', 'hetauda',
-      'dhangadhi', 'janakpur', 'itahari', 'bharatpur', 'kalaiya'
-    ];
-    
-    this.datePatterns = [
-      /\b(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})\b/, // DD/MM/YYYY
-      /\b(\d{4})[\/\-](\d{1,2})[\/\-](\d{1,2})\b/, // YYYY/MM/DD
-      /\b(january|february|march|april|may|june|july|august|september|october|november|december)\s+(\d{1,2})(?:st|nd|rd|th)?\s*,?\s*(\d{4})?\b/i,
-      /\b(\d{1,2})(?:st|nd|rd|th)?\s+(january|february|march|april|may|june|july|august|september|october|november|december)\s*,?\s*(\d{4})?\b/i,
-      /\b(today|tomorrow|next week|next month|this weekend|next weekend)\b/i
-    ];
-    
-    this.budgetPatterns = [
-      /\b(?:budget|price|cost)\s*(?:of|is|around|approximately)?\s*(?:rs\.?|npr\.?)?\s*(\d+(?:,\d{3})*(?:\.\d{2})?)\b/i,
-      /\b(?:rs\.?|npr\.?)\s*(\d+(?:,\d{3})*(?:\.\d{2})?)\s*(?:budget|price|cost)?\b/i,
-      /\b(\d+(?:,\d{3})*(?:\.\d{2})?)\s*(?:rs\.?|npr\.?)?\s*(?:per person|per ticket|per head)?\b/i
-    ];
-    
-    this.initialized = false;
-  }
+class NERProcessor {
+    constructor() {
+        this.openai = new OpenAI({
+            apiKey: process.env.OPENAI_API_KEY
+        });
 
-  async initialize() {
-    if (this.initialized) return true;
-    
-    // Could load trained models here
-    logger.agent('NER', 'Initializing Named Entity Recognition');
-    this.initialized = true;
-    return true;
-  }
-
-  async extractEntities(text, language = 'en') {
-    try {
-      const entities = {
-        event_type: null,
-        location: null,
-        date: null,
-        budget: null,
-        attendees: null,
-        keywords: [],
-        confidence_scores: {}
-      };
-
-      // Clean text
-      const cleanText = text.toLowerCase().trim();
-      
-      // Extract event type
-      entities.event_type = this.extractEventType(cleanText);
-      entities.confidence_scores.event_type = this.calculateConfidence(entities.event_type, 0.8);
-      
-      // Extract location
-      entities.location = this.extractLocation(cleanText);
-      entities.confidence_scores.location = this.calculateConfidence(entities.location, 0.7);
-      
-      // Extract date
-      entities.date = this.extractDate(cleanText);
-      entities.confidence_scores.date = this.calculateConfidence(entities.date, 0.6);
-      
-      // Extract budget
-      entities.budget = this.extractBudget(cleanText);
-      entities.confidence_scores.budget = this.calculateConfidence(entities.budget, 0.5);
-      
-      // Extract number of attendees
-      entities.attendees = this.extractAttendees(cleanText);
-      entities.confidence_scores.attendees = this.calculateConfidence(entities.attendees, 0.4);
-      
-      // Extract keywords
-      entities.keywords = this.extractKeywords(cleanText);
-      
-      // Calculate overall confidence
-      entities.overall_confidence = this.calculateOverallConfidence(entities.confidence_scores);
-      
-      return entities;
-    } catch (error) {
-      logger.error(`NER extraction failed: ${error.message}`);
-      return {
-        event_type: null,
-        location: null,
-        date: null,
-        budget: null,
-        attendees: null,
-        keywords: [],
-        overall_confidence: 0,
-        error: error.message
-      };
+        this.entityTypes = [
+            'event_type',
+            'location',
+            'date',
+            'budget',
+            'guests',
+            'theme',
+            'requirements'
+        ];
     }
-  }
 
-  extractEventType(text) {
-    for (const eventType of this.eventTypes) {
-      if (text.includes(eventType)) {
-        return eventType;
-      }
-    }
-    
-    // Check for variations
-    if (text.includes('music') || text.includes('concert')) return 'concert';
-    if (text.includes('business') || text.includes('meeting')) return 'business';
-    if (text.includes('learn') || text.includes('workshop')) return 'workshop';
-    if (text.includes('marriage') || text.includes('wedding')) return 'wedding';
-    if (text.includes('birthday') || text.includes('bday')) return 'birthday';
-    
-    return null;
-  }
+    /**
+     * Process natural language and extract entities
+     */
+    async processNaturalLanguage(text) {
+        try {
+            const prompt = `
+            Extract the following entities from the event request:
+            "${text}"
+            
+            Extract as JSON with these keys:
+            - event_type: Type of event (wedding, birthday, corporate, etc.)
+            - locations: Array of location mentions
+            - date: Preferred date (YYYY-MM-DD format if available)
+            - budget: Budget amount in numbers
+            - guests: Number of guests if mentioned
+            - theme: Event theme or style
+            - requirements: Special requirements
+            - description: Clean description of the event
+            
+            Return ONLY valid JSON.
+            `;
 
-  extractLocation(text) {
-    for (const location of this.locationKeywords) {
-      if (text.includes(location)) {
-        return location.charAt(0).toUpperCase() + location.slice(1);
-      }
-    }
-    
-    // Check for location indicators
-    const locationIndicators = ['in ', 'at ', 'near ', 'around ', 'location', 'venue', 'place'];
-    for (const indicator of locationIndicators) {
-      const index = text.indexOf(indicator);
-      if (index !== -1) {
-        const afterIndicator = text.substring(index + indicator.length);
-        const nextWord = afterIndicator.split(' ')[0];
-        if (nextWord && nextWord.length > 2) {
-          return nextWord.charAt(0).toUpperCase() + nextWord.slice(1);
+            // if (process.env.OPENAI_API_KEY) {
+            //     const prompt = `Extract event details: "${text}"`;
+
+            if (!process.env.OPENAI_API_KEY) {
+                console.log("No OpenAI key detected, running fallback NLP");
+                return this.fallbackExtraction(text);
+            }
+
+            const response = await this.openai.chat.completions.create({
+                model: "gpt-3.5-turbo",
+                messages: [
+                    { role: "system", content: "You are an event planning assistant. Extract structured information from event requests." },
+                    { role: "user", content: prompt }
+                ],
+                temperature: 0.3,
+                max_tokens: 500
+            });
+
+
+            // console.log('DEBUG NER: OpenAI response received');
+
+            const result = response.choices[0].message.content;
+            console.log('DEBUG NER: Raw OpenAI response:', result);
+            return this.parseAndValidateEntities(result);
+
+            // }
+            // else {
+            //     // Fallback to simple extraction
+            //     console.log('No OpenAI API key, using fallback extraction');
+            //     return this.fallbackExtraction(text);
+            // }
+
+        } catch (error) {
+            console.error('DEBUG NER: Error in processNaturalLanguage:', error.message);
+            // logger.error(`NER processing failed: ${error.message}`);
+
+            try {
+                return this.fallbackExtraction(text);
+            }
+            catch (fallbackError) {
+                console.error("Fallback extraction also failed:", fallbackError);
+                // ✅ FIX: Return a minimum valid object
+                return {
+                    eventType: 'general',
+                    locations: [],
+                    date: null,
+                    budget: null,
+                    guests: null,
+                    theme: '',
+                    requirements: '',
+                    description: text
+                };
+            }
+
+            // Fallback to regex-based extraction if OpenAI fails
+            // return this.fallbackExtraction(text);
         }
-      }
     }
-    
-    return null;
-  }
 
-  extractDate(text) {
-    for (const pattern of this.datePatterns) {
-      const match = text.match(pattern);
-      if (match) {
-        return match[0];
-      }
-    }
-    
-    // Check for relative dates
-    if (text.includes('today')) return 'today';
-    if (text.includes('tomorrow')) return 'tomorrow';
-    if (text.includes('next week')) return 'next week';
-    if (text.includes('next month')) return 'next month';
-    if (text.includes('weekend')) return 'this weekend';
-    
-    return null;
-  }
+    parseAndValidateEntities(jsonString) {
+        try {
+            const entities = JSON.parse(jsonString);
 
-  extractBudget(text) {
-    for (const pattern of this.budgetPatterns) {
-      const match = text.match(pattern);
-      if (match) {
-        // Extract numeric value
-        const numericMatch = match[1] || match[0];
-        const cleaned = numericMatch.replace(/[^\d.]/g, '');
-        const amount = parseFloat(cleaned);
-        
-        if (!isNaN(amount) && amount > 0) {
-          return {
-            amount: amount,
-            currency: 'NPR',
-            range: this.estimateBudgetRange(amount),
-            original_text: match[0]
-          };
+            // Validate and clean entities
+            const validated = {
+                eventType: entities.event_type || 'general',
+                locations: Array.isArray(entities.locations) ? entities.locations :
+                    entities.locations ? [entities.locations] : [],
+                date: this.parseDate(entities.date),
+                budget: this.extractBudget(entities.budget),
+                guests: this.extractNumber(entities.guests),
+                theme: entities.theme || '',
+                requirements: entities.requirements || '',
+                description: entities.description || ''
+            };
+
+            // Clean locations
+            validated.locations = validated.locations
+                .map(loc => loc.trim())
+                .filter(loc => loc.length > 0);
+
+            return validated;
+        } catch (error) {
+            logger.error(`Failed to parse NER results: ${error.message}`);
+            return this.fallbackExtraction(jsonString);
         }
-      }
     }
-    
-    // Check for budget ranges
-    const rangePattern = /\b(\d+)\s*-\s*(\d+)\s*(?:rs|npr)?\b/i;
-    const rangeMatch = text.match(rangePattern);
-    if (rangeMatch) {
-      const min = parseInt(rangeMatch[1]);
-      const max = parseInt(rangeMatch[2]);
-      
-      if (!isNaN(min) && !isNaN(max) && min > 0 && max >= min) {
-        return {
-          amount: (min + max) / 2,
-          currency: 'NPR',
-          range: { min, max },
-          is_range: true
+
+    fallbackExtraction(text) {
+
+        const lowerText = text.toLowerCase();
+
+        console.log('DEBUG NER: Running fallback extraction for:', text);
+        // Ensure text is a string
+        const textStr = text || '';
+        // const textLower = textStr.toLowerCase();
+        const entities = {
+            eventType: 'general',
+            locations: [],
+            date: null,
+            budget: null,
+            guests: null,
+            theme: '',
+            requirements: '',
+            description: text
         };
-      }
-    }
-    
-    return null;
-  }
 
-  extractAttendees(text) {
-    const patterns = [
-      /\b(\d+)\s*(?:people|persons|attendees|guests|participants)\b/i,
-      /\bfor\s+(\d+)\s*(?:people|persons)?\b/i,
-      /\b(\d+)\s*(?:person|people)\s+(?:event|party|gathering)\b/i
-    ];
-    
-    for (const pattern of patterns) {
-      const match = text.match(pattern);
-      if (match) {
-        const count = parseInt(match[1]);
-        if (!isNaN(count) && count > 0) {
-          return count;
+
+        const eventKeywords = ["wedding", "birthday", "conference", "meeting", "seminar", "business", "party", "anniversary", "workshop", "concert", "festival"];
+        // entities.eventType = eventKeywords.find(kw => text.toLowerCase().includes(kw)) || "general";
+        for (const keyword of eventKeywords) {
+            if (lowerText.includes(keyword)) {
+                entities.eventType = keyword;
+                break;
+            }
         }
-      }
+        const locationKeywords = ["Kathmandu", "Pokhara", "Lalitpur", "Biratnagar", "Birgunj", "Dharan", "Nepalgunj", "Hetauda"];
+        // entities.locations = cities.filter(city => text.toLowerCase().includes(city.toLowerCase()));
+        // Debug: Show what we're looking for
+        console.log("Looking for locations in:", lowerText);
+
+        locationKeywords.forEach(location => {
+            // Use regex for better matching (case insensitive, whole word)
+            const regex = new RegExp(`\\b${location}\\b`, 'i');
+            if (regex.test(lowerText)) {
+                console.log(`✅ Found location: ${location}`);
+                entities.locations.push(location);
+            }
+        });
+
+        // If still no locations found, try harder
+
+        if (entities.locations.length === 0) {
+            // Check for location-like words (capitalized, common city names)
+            const locationWords = text.split(/\s+/).filter(word =>
+                /^[A-Z][a-z]+$/.test(word) && word.length > 3
+            );
+            console.log("Potential location words:", locationWords);
+
+            // Add first capitalized word as potential location
+            if (locationWords.length > 0) {
+                entities.locations.push(locationWords[0].toLowerCase());
+            }
+        }
+
+
+        // Simple regex patterns for fallback
+        const patterns = {
+            budget: /(\$|₹|Rs\.?|USD\s*)?(\d+(?:,\d{3})*(?:\.\d{2})?)/i,
+            guests: /(\d+)\s*(?:guests?|people|persons|attendees)/i,
+            date: /(\d{4}-\d{2}-\d{2})|(\d{1,2}\/\d{1,2}\/\d{4})/
+
+        };
+
+        // Fix budget extraction - look for "budget" keyword specifically
+        const budgetRegex = /budget\s*(?:of|is|:)?\s*(\d+(?:,\d{3})*(?:\.\d{2})?)/i;
+        const budgetMatch = text.match(budgetRegex);
+
+        if (budgetMatch) {
+            entities.budget = parseInt(budgetMatch[1].replace(/,/g, ''));
+            console.log(`✅ Extracted budget: ${entities.budget}`);
+        } else {
+            // Look for numbers after currency indicators
+            const currencyRegex = /(?:rs\.?|npr|usd|\$)\s*(\d+(?:,\d{3})*(?:\.\d{2})?)/i;
+            const currencyMatch = text.match(currencyRegex);
+
+            if (currencyMatch) {
+                entities.budget = parseInt(currencyMatch[1].replace(/,/g, ''));
+                console.log(`✅ Extracted budget via currency: ${entities.budget}`);
+            } else {
+                // Find the largest number that's NOT the guest count
+                const allNumbers = text.match(/\d+(?:,\d{3})*(?:\.\d{2})?/g) || [];
+                const numbers = allNumbers.map(num => parseInt(num.replace(/,/g, '')));
+
+                if (numbers.length > 0) {
+                    // Sort descending, pick the largest (likely budget)
+                    numbers.sort((a, b) => b - a);
+                    entities.budget = numbers[0];
+                    console.log(`✅ Extracted largest number as budget: ${entities.budget}`);
+                }
+            }
+        }
+
+        // Extract guests - fix to avoid conflict with budget
+        const guestsRegex = /(\d+)\s*(?:guests?|people|persons|attendees|participants|individuals)\b/i;
+        const guestsMatch = text.match(guestsRegex);
+
+        if (guestsMatch) {
+            entities.guests = parseInt(guestsMatch[1]);
+            console.log(`✅ Extracted guests: ${entities.guests}`);
+        } else {
+            // Alternative pattern: "for X people"
+            const altGuestsRegex = /for\s+(\d+)\s+(?:people|guests|persons)\b/i;
+            const altMatch = text.match(altGuestsRegex);
+            if (altMatch) {
+                entities.guests = parseInt(altMatch[1]);
+                console.log(`✅ Extracted guests (alt): ${entities.guests}`);
+            }
+        }
+
+        // Extract date
+        const dateMatch = text.match(patterns.date);
+        if (dateMatch) {
+            entities.date = dateMatch[0];
+
+        }
+
+        return entities;
+
+
+        // return {
+        //     success: true,
+        //     extractedEntities: entities,
+        //     error: null
+        // };
     }
-    
-    return null;
-  }
 
-  extractKeywords(text) {
-    const keywords = [];
-    const words = text.split(/\W+/).filter(word => word.length > 3);
-    
-    const importantKeywords = [
-      'outdoor', 'indoor', 'virtual', 'hybrid', 'formal', 'casual',
-      'corporate', 'personal', 'private', 'public', 'large', 'small',
-      'luxury', 'budget', 'premium', 'standard', 'custom', 'theme'
-    ];
-    
-    for (const word of words) {
-      if (importantKeywords.includes(word) && !keywords.includes(word)) {
-        keywords.push(word);
-      }
+    parseDate(dateString) {
+        if (!dateString) return null;
+
+        try {
+            const date = new Date(dateString);
+            return isNaN(date.getTime()) ? null : date.toISOString().split('T')[0];
+        } catch (error) {
+            return null;
+        }
     }
-    
-    return keywords;
-  }
 
-  estimateBudgetRange(amount) {
-    if (amount <= 1000) return { min: 0, max: 1000 };
-    if (amount <= 5000) return { min: 1000, max: 5000 };
-    if (amount <= 10000) return { min: 5000, max: 10000 };
-    if (amount <= 25000) return { min: 10000, max: 25000 };
-    if (amount <= 50000) return { min: 25000, max: 50000 };
-    return { min: 50000, max: 1000000 };
-  }
+    extractBudget(budgetString) {
+        if (!budgetString) return null;
 
-  calculateConfidence(value, baseConfidence) {
-    if (!value) return 0;
-    return baseConfidence + (Math.random() * 0.2); // Add some randomness
-  }
+        // Extract numbers from budget string
+        const matches = budgetString.match(/\d+(?:,\d{3})*(?:\.\d{2})?/);
+        if (matches) {
+            return parseFloat(matches[0].replace(/,/g, ''));
+        }
+        return null;
+    }
 
-  calculateOverallConfidence(scores) {
-    const values = Object.values(scores);
-    if (values.length === 0) return 0;
-    
-    const sum = values.reduce((a, b) => a + b, 0);
-    return sum / values.length;
-  }
-
-  async trainModel(trainingData) {
-    logger.agent('NER', 'Training model with', trainingData.length, 'examples');
-    // In production, this would train a machine learning model
-    return {
-      status: 'training_complete',
-      accuracy: 0.85,
-      timestamp: new Date().toISOString()
-    };
-  }
+    extractNumber(text) {
+        if (!text) return null;
+        const match = text.match(/\d+/);
+        return match ? parseInt(match[0]) : null;
+    }
 }
 
-module.exports = new NER();
+// Create singleton instance
+const nerProcessor = new NERProcessor();
+
+module.exports = {
+    processNaturalLanguage: (text) => nerProcessor.processNaturalLanguage(text),
+    NERProcessor
+};
