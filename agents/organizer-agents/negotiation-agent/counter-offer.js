@@ -2,231 +2,174 @@ const logger = require('../../../config/logger');
 
 class CounterOffer {
   constructor() {
+    // Updated for Nepal prices in NPR
     this.marketData = {
-      average_prices: {
-        'conference': 2500,
-        'workshop': 1200,
-        'concert': 1500,
-        'festival': 800,
-        'wedding': 5000,
-        'birthday': 2000
+      average_prices_npr: {
+        'wedding': 500000,
+        'conference': 150000,
+        'birthday': 75000,
+        'corporate': 200000,
+        'party': 50000,
+        'workshop': 80000,
+        'seminar': 100000,
+        'festival': 300000,
+        'graduation': 60000,
+        'engagement': 300000
       },
+      // Nepal event seasons (multipliers for pricing)
       seasonal_multipliers: {
-        'high': 1.3,
-        'medium': 1.0,
-        'low': 0.7
+        'wedding_season': 1.3,      // Nov-Feb
+        'festival_season': 1.2,     // Sep-Oct (Dashain, Tihar)
+        'off_season': 0.8,          // Jun-Aug (monsoon)
+        'normal': 1.0
+      },
+      // Location adjustments (Kathmandu most expensive)
+      location_multipliers: {
+        'kathmandu': 1.3,
+        'lalitpur': 1.2,
+        'bhaktapur': 1.2,
+        'pokhara': 1.1,
+        'chitwan': 1.0,
+        'biratnagar': 0.9,
+        'default': 1.0
       }
     };
   }
 
-  calculateCounterOffer(userOffer, previousOffer, strategy, negotiationType) {
-    // Calculate base counter offer
-    let baseOffer;
+  // ✅ UPDATED: Event request specific calculation
+  calculateEventRequestCounter(userOffer, organizerOffer, eventType, location) {
+    // Get market average for this event type
+    const marketAvg = this.marketData.average_prices_npr[eventType] || 100000;
     
-    if (negotiationType === 'price') {
-      baseOffer = this.calculatePriceCounterOffer(userOffer, previousOffer, strategy);
-    } else if (negotiationType === 'date') {
-      baseOffer = this.calculateDateCounterOffer(userOffer, previousOffer, strategy);
-    } else {
-      baseOffer = this.calculateGenericCounterOffer(userOffer, previousOffer, strategy);
+    // Get location multiplier
+    const locKey = location ? Object.keys(this.marketData.location_multipliers)
+      .find(loc => location.toLowerCase().includes(loc)) : 'default';
+    const locationMultiplier = this.marketData.location_multipliers[locKey] || 1.0;
+    
+    // Get season multiplier
+    const season = this.getCurrentSeason();
+    const seasonMultiplier = this.marketData.seasonal_multipliers[season];
+    
+    // Calculate adjusted market price
+    const adjustedMarketPrice = marketAvg * locationMultiplier * seasonMultiplier;
+    
+    // Calculate gaps
+    const gapFromOrganizer = Math.abs(userOffer - organizerOffer);
+    const gapFromMarket = Math.abs(userOffer - adjustedMarketPrice);
+    
+    // Rule 1: If user offer is within 20% of organizer offer, meet in middle
+    if (gapFromOrganizer / organizerOffer < 0.2) {
+      const middle = (userOffer + organizerOffer) / 2;
+      return {
+        offer: Math.round(middle),
+        concessionRate: (organizerOffer - middle) / organizerOffer,
+        reasoning: `Meeting halfway between your offer and organizer's proposal.`,
+        finalOffer: false
+      };
     }
     
-    // Apply market adjustments
-    const adjustedOffer = this.applyMarketAdjustments(baseOffer, negotiationType);
+    // Rule 2: If user offer is close to market price, accept with small adjustment
+    if (gapFromMarket / adjustedMarketPrice < 0.15) {
+      const adjustedOffer = userOffer * 0.98; // 2% adjustment
+      return {
+        offer: Math.round(adjustedOffer),
+        concessionRate: 0.02,
+        reasoning: `Close to market rate for ${eventType} in ${location}. Accepting with minor adjustment.`,
+        finalOffer: true
+      };
+    }
     
-    // Calculate concession rate
-    const concessionRate = this.calculateConcessionRate(previousOffer, adjustedOffer);
+    // Rule 3: Make standard concession (10-25% of the gap)
+    const concessionPercent = 0.15 + (Math.random() * 0.1); // 15-25%
+    const concession = gapFromOrganizer * concessionPercent;
+    const newOffer = organizerOffer - concession;
+    
+    // Don't go below 70% of market price
+    const minPrice = adjustedMarketPrice * 0.7;
+    const finalOffer = Math.max(newOffer, minPrice);
     
     return {
-      offer: adjustedOffer,
-      concessionRate: concessionRate,
-      reasoning: this.generateReasoning(userOffer, adjustedOffer, negotiationType, concessionRate),
-      finalOffer: concessionRate >= strategy.max_concession
+      offer: Math.round(finalOffer),
+      concessionRate: concession / organizerOffer,
+      reasoning: `Considering ${eventType} in ${location}. Offering ${Math.round(concessionPercent * 100)}% concession.`,
+      finalOffer: (concession / organizerOffer) >= 0.25 // Final if concession >= 25%
     };
   }
 
-  calculatePriceCounterOffer(userOffer, previousOffer, strategy) {
-    const gap = previousOffer - userOffer;
-    const acceptableGap = previousOffer * strategy.initial_concession;
-    
-    if (gap <= 0) {
-      // User offer is higher than ours (rare) - accept or slightly increase
-      return userOffer * 0.95;
-    }
-    
-    if (gap <= acceptableGap) {
-      // Small gap - meet halfway
-      return previousOffer - (gap * 0.5);
-    }
-    
-    // Larger gap - make conservative concession
-    const concession = Math.min(gap * 0.3, previousOffer * strategy.initial_concession);
-    return previousOffer - concession;
-  }
-
-  calculateDateCounterOffer(userOffer, previousOffer, strategy) {
-    // For dates, we're dealing with date strings or timestamps
-    // This is simplified - in production would parse dates
-    
-    const gap = this.calculateDateGap(userOffer, previousOffer);
-    const maxGap = 7; // 7 days max concession
-    
-    if (gap <= maxGap * 0.3) {
-      // Small date change - accept
-      return userOffer;
-    }
-    
-    // Find middle ground
-    return this.findMiddleDate(userOffer, previousOffer);
-  }
-
-  calculateGenericCounterOffer(userOffer, previousOffer, strategy) {
-    // Generic counter offer for venue, terms, etc.
-    const difference = Math.abs(previousOffer - userOffer);
-    
-    if (difference < 0.1 * previousOffer) {
-      // Less than 10% difference - meet in middle
-      return (previousOffer + userOffer) / 2;
-    }
-    
-    // Larger difference - make standard concession
-    const concession = previousOffer * strategy.initial_concession;
-    
-    if (userOffer < previousOffer) {
-      return previousOffer - concession;
-    } else {
-      return previousOffer + concession;
-    }
-  }
-
-  applyMarketAdjustments(offer, negotiationType) {
-    if (negotiationType !== 'price') return offer;
-    
-    // Get current season
-    const season = this.getCurrentSeason();
-    const multiplier = this.marketData.seasonal_multipliers[season];
-    
-    // Adjust based on market averages if available
-    const eventType = this.inferEventType(offer);
-    if (eventType && this.marketData.average_prices[eventType]) {
-      const marketAvg = this.marketData.average_prices[eventType];
-      
-      // Don't go below 70% of market average
-      const minPrice = marketAvg * 0.7;
-      if (offer < minPrice) {
-        logger.warning(`Offer ${offer} below market minimum ${minPrice}, adjusting`);
-        return Math.max(offer, minPrice);
-      }
-      
-      // Don't go above 150% of market average without reason
-      const maxPrice = marketAvg * 1.5;
-      if (offer > maxPrice) {
-        logger.warning(`Offer ${offer} above market maximum ${maxPrice}, adjusting`);
-        return Math.min(offer, maxPrice);
-      }
-    }
-    
-    return offer * multiplier;
-  }
-
+  // ✅ NEW: Get current Nepal season
   getCurrentSeason() {
     const month = new Date().getMonth() + 1;
     
-    // Nepal seasons: High (Oct-Nov, Mar-Apr), Medium (Dec-Feb), Low (May-Sep)
-    if (month === 10 || month === 11 || month === 3 || month === 4) {
-      return 'high';
-    } else if (month >= 5 && month <= 9) {
-      return 'low';
-    } else {
-      return 'medium';
+    // Nepal seasons
+    if (month >= 11 || month <= 2) {
+      return 'wedding_season';      // Nov-Feb: Wedding season
+    } else if (month >= 9 && month <= 10) {
+      return 'festival_season';     // Sep-Oct: Dashain, Tihar
+    } else if (month >= 6 && month <= 8) {
+      return 'off_season';          // Jun-Aug: Monsoon
     }
+    return 'normal';
   }
 
-  inferEventType(price) {
-    // Infer event type based on price range
-    if (price >= 4000) return 'wedding';
-    if (price >= 2000) return 'conference';
-    if (price >= 1200) return 'concert';
-    if (price >= 800) return 'workshop';
-    if (price >= 500) return 'festival';
-    return 'other';
-  }
-
-  calculateConcessionRate(previousOffer, newOffer) {
-    if (previousOffer === 0) return 0;
+  // ✅ NEW: Get price recommendations for event type
+  getEventTypePriceRecommendation(eventType, location, guestCount = 100) {
+    const basePrice = this.marketData.average_prices_npr[eventType] || 100000;
+    const locKey = location ? Object.keys(this.marketData.location_multipliers)
+      .find(loc => location.toLowerCase().includes(loc)) : 'default';
+    const locationMultiplier = this.marketData.location_multipliers[locKey] || 1.0;
+    const seasonMultiplier = this.marketData.seasonal_multipliers[this.getCurrentSeason()];
     
-    const concession = Math.abs(previousOffer - newOffer);
-    return concession / previousOffer;
-  }
-
-  generateReasoning(userOffer, counterOffer, negotiationType, concessionRate) {
-    const reasonTemplates = {
-      'price': [
-        `Market rates suggest ${counterOffer} is fair for this event type.`,
-        `Considering your offer of ${userOffer}, I'm offering a ${Math.round(concessionRate * 100)}% concession.`,
-        `This price includes all amenities and services.`
-      ],
-      'date': [
-        `This date accommodates venue availability.`,
-        `Alternative dates may incur additional costs.`,
-        `This timing aligns with optimal attendance.`
-      ],
-      'venue': [
-        `The venue offers similar capacity and facilities.`,
-        `This location has better accessibility.`,
-        `Venue includes additional amenities.`
-      ]
-    };
+    const estimatedPrice = basePrice * locationMultiplier * seasonMultiplier;
     
-    const templates = reasonTemplates[negotiationType] || reasonTemplates.price;
-    return templates[Math.floor(Math.random() * templates.length)];
-  }
-
-  calculateDateGap(date1, date2) {
-    // Simplified date gap calculation
-    // In production, parse dates and calculate difference
-    return Math.abs(parseInt(date1) - parseInt(date2)) || 0;
-  }
-
-  findMiddleDate(date1, date2) {
-    // Simplified middle date calculation
-    const d1 = parseInt(date1) || 0;
-    const d2 = parseInt(date2) || 0;
-    return Math.round((d1 + d2) / 2).toString();
-  }
-
-  async updateMarketData(newData) {
-    this.marketData = {
-      ...this.marketData,
-      ...newData
-    };
-    
-    logger.agent('CounterOffer', 'Market data updated');
-    return this.marketData;
-  }
-
-  getMarketInsights() {
     return {
-      average_prices: this.marketData.average_prices,
-      current_season: this.getCurrentSeason(),
-      seasonal_multiplier: this.marketData.seasonal_multipliers[this.getCurrentSeason()],
-      recommendations: this.generateRecommendations()
+      eventType,
+      location,
+      basePrice: Math.round(basePrice),
+      locationMultiplier,
+      season: this.getCurrentSeason(),
+      seasonMultiplier,
+      estimatedPrice: Math.round(estimatedPrice),
+      perPerson: Math.round(estimatedPrice / guestCount),
+      recommendations: this.getPriceRecommendations(eventType, estimatedPrice)
     };
   }
 
-  generateRecommendations() {
-    const season = this.getCurrentSeason();
+  getPriceRecommendations(eventType, estimatedPrice) {
     const recommendations = [];
     
-    if (season === 'high') {
-      recommendations.push('High season - prices can be 30% higher');
-      recommendations.push('Book venues well in advance');
-    } else if (season === 'low') {
-      recommendations.push('Low season - negotiate for better rates');
-      recommendations.push('More venue availability');
+    if (eventType === 'wedding') {
+      recommendations.push('Wedding season (Nov-Feb) prices are 30% higher');
+      recommendations.push('Consider weekday weddings for 20% discount');
+      recommendations.push('Package deals available for 100+ guests');
+    } else if (eventType === 'conference') {
+      recommendations.push('Corporate rates available for multi-day events');
+      recommendations.push('AV equipment included in base price');
+    } else if (eventType === 'birthday') {
+      recommendations.push('Themed decorations available at extra cost');
+      recommendations.push('Catering packages starting from NPR 500 per person');
     }
     
     return recommendations;
+  }
+
+  // ✅ NEW: Validate if user offer is reasonable
+  validateOffer(userOffer, eventType, location) {
+    const recommendation = this.getEventTypePriceRecommendation(eventType, location);
+    const minReasonable = recommendation.estimatedPrice * 0.6;
+    const maxReasonable = recommendation.estimatedPrice * 1.5;
+    
+    return {
+      userOffer,
+      estimatedMarketPrice: recommendation.estimatedPrice,
+      isReasonable: userOffer >= minReasonable && userOffer <= maxReasonable,
+      minReasonable: Math.round(minReasonable),
+      maxReasonable: Math.round(maxReasonable),
+      suggestion: userOffer < minReasonable ? 
+        `Consider increasing budget to at least NPR ${Math.round(minReasonable)}` :
+        userOffer > maxReasonable ?
+        `Negotiate for better rate, market max is NPR ${Math.round(maxReasonable)}` :
+        'Offer is within reasonable range'
+    };
   }
 }
 

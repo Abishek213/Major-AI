@@ -3,133 +3,192 @@ const CounterOffer = require('./counter-offer');
 
 class NegotiationAgent {
   constructor() {
-    this.name = 'negotiation-agent';
+    this.name = 'event-request-negotiation-agent';
     this.counterOffer = new CounterOffer();
-    this.negotiationHistory = new Map();
-    this.strategies = {
-      'price': {
-        initial_concession: 0.1,
-        max_concession: 0.3,
-        time_factor: 0.01
-      },
-      'date': {
-        initial_concession: 0.2,
-        max_concession: 0.5,
-        time_factor: 0.02
-      },
-      'venue': {
-        initial_concession: 0.15,
-        max_concession: 0.4,
-        time_factor: 0.015
-      }
+    this.eventRequestNegotiations = new Map(); // Store ONLY event request negotiations
+    
+    // Simplified strategy for event requests
+    this.strategy = {
+      max_rounds: 5,           // Max 5 negotiation rounds
+      timeout_hours: 72,       // 3 days to respond
+      min_concession: 0.05,    // At least 5% concession per round
+      max_total_concession: 0.3 // Max 30% total concession
     };
   }
 
   async initialize() {
-    logger.agent(this.name, 'Initializing negotiation agent');
+    logger.agent(this.name, 'Initializing event request negotiation agent');
     return true;
   }
 
-  async initiateNegotiation(bookingId, userId, initialOffer, negotiationType = 'price') {
+  // ✅ NEW: Start negotiation when organizer responds to event request
+  async startEventRequestNegotiation(eventRequestId, organizerId, organizerOffer, organizerMessage) {
     try {
-      logger.agent(this.name, `Initiating negotiation for booking ${bookingId}`);
-      
-      const negotiationId = `neg_${Date.now()}_${bookingId}`;
-      
-      const negotiation = {
-        id: negotiationId,
-        bookingId,
-        userId,
-        type: negotiationType,
-        offers: [{
-          amount: initialOffer,
-          party: 'user',
-          timestamp: new Date().toISOString(),
-          message: 'Initial offer'
-        }],
-        status: 'active',
-        createdAt: new Date().toISOString(),
-        lastUpdated: new Date().toISOString(),
-        strategy: this.strategies[negotiationType] || this.strategies.price
-      };
+      const negotiationId = `evt_req_${eventRequestId}_${organizerId}`;
       
       // Store negotiation
-      this.negotiationHistory.set(negotiationId, negotiation);
+      const negotiation = {
+        id: negotiationId,
+        eventRequestId,
+        organizerId,
+        type: 'price',
+        status: 'organizer_proposed',
+        currentRound: 1,
+        offers: [{
+          amount: organizerOffer,
+          party: 'organizer',
+          timestamp: new Date().toISOString(),
+          message: organizerMessage,
+          round: 1
+        }],
+        metadata: {
+          startedAt: new Date().toISOString(),
+          lastUserActivity: null,
+          timeoutAt: new Date(Date.now() + (this.strategy.timeout_hours * 60 * 60 * 1000))
+        },
+        history: []
+      };
       
-      logger.success(`Negotiation ${negotiationId} initiated`);
+      this.eventRequestNegotiations.set(negotiationId, negotiation);
+      
+      logger.success(`Event request negotiation started: ${negotiationId}`);
       
       return {
         success: true,
         negotiationId,
-        status: 'active',
-        current_offer: initialOffer,
-        next_action: 'awaiting_counter_offer'
+        status: 'awaiting_user_response',
+        organizerOffer,
+        message: 'Negotiation started. User can now counter-offer.'
       };
     } catch (error) {
-      logger.error(`Failed to initiate negotiation: ${error.message}`);
+      logger.error(`Failed to start negotiation: ${error.message}`);
       return {
         success: false,
-        error: 'Failed to initiate negotiation'
+        error: 'Failed to start negotiation'
       };
     }
   }
 
-  async processCounterOffer(negotiationId, offer, party, message = '') {
+  // ✅ NEW: User makes counter-offer
+  async processUserCounter(negotiationId, userOffer, userMessage = '') {
     try {
-      const negotiation = this.negotiationHistory.get(negotiationId);
+      const negotiation = this.eventRequestNegotiations.get(negotiationId);
       
       if (!negotiation) {
-        throw new Error(`Negotiation ${negotiationId} not found`);
+        throw new Error('Negotiation not found');
       }
       
-      if (negotiation.status !== 'active') {
-        throw new Error(`Negotiation ${negotiationId} is ${negotiation.status}`);
+      if (negotiation.status === 'concluded') {
+        throw new Error('Negotiation already concluded');
       }
       
-      // Add new offer
+      if (negotiation.status === 'expired') {
+        throw new Error('Negotiation expired');
+      }
+      
+      // Add user's counter offer
       negotiation.offers.push({
-        amount: offer,
-        party,
+        amount: userOffer,
+        party: 'user',
         timestamp: new Date().toISOString(),
-        message
+        message: userMessage,
+        round: negotiation.currentRound
       });
       
-      negotiation.lastUpdated = new Date().toISOString();
+      // Get last organizer offer
+      const lastOrganizerOffer = negotiation.offers
+        .filter(o => o.party === 'organizer')
+        .pop();
       
-      // Generate AI response if party is user
-      if (party === 'user') {
-        const aiResponse = await this.generateAIReponse(negotiation, offer);
-        negotiation.offers.push({
-          amount: aiResponse.offer,
-          party: 'ai',
-          timestamp: new Date().toISOString(),
-          message: aiResponse.message,
-          reasoning: aiResponse.reasoning
-        });
+      if (!lastOrganizerOffer) {
+        throw new Error('No organizer offer found');
+      }
+      
+      // Get event request details (in real app, fetch from DB)
+      const eventDetails = await this.getEventRequestDetails(negotiation.eventRequestId);
+      
+      // Generate AI counter-offer
+      const aiResponse = this.counterOffer.calculateEventRequestCounter(
+        userOffer,
+        lastOrganizerOffer.amount,
+        eventDetails.eventType,
+        eventDetails.location
+      );
+      
+      // Check if AI recommends accepting
+      const shouldAccept = this.shouldAcceptOffer(
+        userOffer,
+        lastOrganizerOffer.amount,
+        negotiation.currentRound,
+        aiResponse
+      );
+      
+      // Add AI/organizer response
+      negotiation.offers.push({
+        amount: shouldAccept ? userOffer : aiResponse.offer,
+        party: 'organizer_ai',
+        timestamp: new Date().toISOString(),
+        message: shouldAccept ? 'Deal accepted! Let\'s proceed.' : aiResponse.reasoning,
+        round: negotiation.currentRound,
+        isAI: true,
+        metadata: {
+          concessionRate: aiResponse.concessionRate,
+          marketAdjusted: true
+        }
+      });
+      
+      // Update status
+      if (shouldAccept || aiResponse.finalOffer) {
+        negotiation.status = 'concluded';
+        negotiation.result = shouldAccept ? 'user_offer_accepted' : 'final_offer_made';
+        negotiation.finalAmount = shouldAccept ? userOffer : aiResponse.offer;
+        negotiation.concludedAt = new Date().toISOString();
+      } else {
+        negotiation.currentRound += 1;
+        negotiation.status = 'countered';
         
-        negotiation.lastUpdated = new Date().toISOString();
-        
-        // Check if negotiation should be concluded
-        if (aiResponse.conclude) {
-          negotiation.status = 'concluded';
-          negotiation.result = aiResponse.result;
-          negotiation.concludedAt = new Date().toISOString();
+        // Check if max rounds reached
+        if (negotiation.currentRound > this.strategy.max_rounds) {
+          negotiation.status = 'expired';
+          negotiation.result = 'max_rounds_reached';
         }
       }
       
-      // Update history
-      this.negotiationHistory.set(negotiationId, negotiation);
+      negotiation.metadata.lastUserActivity = new Date().toISOString();
       
-      logger.agent(this.name, `Processed counter offer for ${negotiationId}: ${offer} from ${party}`);
+      // Save to history
+      negotiation.history.push({
+        round: negotiation.currentRound,
+        userOffer,
+        aiResponse: aiResponse.offer,
+        timestamp: new Date().toISOString()
+      });
+      
+      this.eventRequestNegotiations.set(negotiationId, negotiation);
+      
+      logger.agent(this.name, `Round ${negotiation.currentRound} completed for ${negotiationId}`);
       
       return {
         success: true,
-        negotiation: this.sanitizeNegotiation(negotiation),
-        last_offer: negotiation.offers[negotiation.offers.length - 1],
-        status: negotiation.status
+        negotiation: {
+          id: negotiation.id,
+          eventRequestId: negotiation.eventRequestId,
+          currentRound: negotiation.currentRound,
+          status: negotiation.status,
+          lastOffer: negotiation.offers[negotiation.offers.length - 1],
+          offers: negotiation.offers.slice(-3), // Last 3 offers
+          progress: this.calculateProgress(negotiation.offers),
+          isFinal: shouldAccept || aiResponse.finalOffer
+        },
+        aiResponse: {
+          offer: shouldAccept ? userOffer : aiResponse.offer,
+          message: shouldAccept ? 'Deal accepted!' : aiResponse.reasoning,
+          accepted: shouldAccept,
+          finalOffer: aiResponse.finalOffer
+        }
       };
     } catch (error) {
-      logger.error(`Failed to process counter offer: ${error.message}`);
+      logger.error(`Failed to process user counter: ${error.message}`);
       return {
         success: false,
         error: error.message
@@ -137,92 +196,63 @@ class NegotiationAgent {
     }
   }
 
-  async generateAIReponse(negotiation, userOffer) {
-    const strategy = negotiation.strategy;
-    const history = negotiation.offers;
+  // ✅ NEW: Simple acceptance logic
+  shouldAcceptOffer(userOffer, lastOrganizerOffer, currentRound, aiResponse) {
+    const gap = Math.abs(userOffer - lastOrganizerOffer) / lastOrganizerOffer;
     
-    // Get previous AI offer
-    const previousAIOffer = history
-      .filter(offer => offer.party === 'ai')
-      .pop();
-    
-    const previousOffer = previousAIOffer ? previousAIOffer.amount : history[0].amount;
-    
-    // Calculate counter offer
-    const counterOffer = this.counterOffer.calculateCounterOffer(
-      userOffer,
-      previousOffer,
-      strategy,
-      negotiation.type
-    );
-    
-    // Generate message
-    const message = this.generateNegotiationMessage(
-      negotiation.type,
-      userOffer,
-      counterOffer.offer,
-      counterOffer.concessionRate
-    );
-    
-    // Check if we should accept
-    const shouldAccept = this.shouldAcceptOffer(
-      userOffer,
-      previousOffer,
-      strategy,
-      negotiation.offers.length
-    );
-    
-    return {
-      offer: shouldAccept ? userOffer : counterOffer.offer,
-      message: shouldAccept ? 'Offer accepted!' : message,
-      reasoning: counterOffer.reasoning,
-      concede: shouldAccept,
-      conclude: shouldAccept || counterOffer.finalOffer,
-      result: shouldAccept ? 'accepted' : 'countered'
-    };
-  }
-
-  generateNegotiationMessage(type, userOffer, counterOffer, concessionRate) {
-    const messages = {
-      'price': [
-        `I understand your offer of ${userOffer}. Based on market rates, I can offer ${counterOffer}.`,
-        `Thank you for your offer. I can come down to ${counterOffer}, which is a ${Math.round(concessionRate * 100)}% concession.`,
-        `I appreciate your offer. Our best price would be ${counterOffer}.`
-      ],
-      'date': [
-        `The date you requested is challenging. How about ${counterOffer} instead?`,
-        `I can accommodate your request by shifting to ${counterOffer}.`,
-        `Let's find a middle ground: ${counterOffer} works for us.`
-      ],
-      'venue': [
-        `The venue you requested is booked. ${counterOffer} is available and similar.`,
-        `I can offer ${counterOffer} as an alternative venue.`,
-        `How about ${counterOffer} instead? It has similar amenities.`
-      ]
-    };
-    
-    const typeMessages = messages[type] || messages.price;
-    return typeMessages[Math.floor(Math.random() * typeMessages.length)];
-  }
-
-  shouldAcceptOffer(userOffer, previousOffer, strategy, round) {
-    // Accept if within acceptable range
-    const acceptableRange = previousOffer * (1 - strategy.max_concession);
-    
-    if (userOffer >= acceptableRange) {
+    // Rule 1: Accept if within 10% and past round 2
+    if (gap <= 0.1 && currentRound >= 2) {
       return true;
     }
     
-    // Accept if too many rounds
-    if (round >= 5) {
-      return Math.random() > 0.5; // 50% chance to accept
+    // Rule 2: Accept if AI says it's final offer
+    if (aiResponse.finalOffer) {
+      return true;
+    }
+    
+    // Rule 3: 50% chance to accept after max rounds
+    if (currentRound >= this.strategy.max_rounds) {
+      return Math.random() > 0.5;
     }
     
     return false;
   }
 
+  // ✅ NEW: Get event request details (mock - in real app fetch from DB)
+  async getEventRequestDetails(eventRequestId) {
+    // This would fetch from database
+    // For now, return mock data matching your event request structure
+    return {
+      eventType: 'wedding', // Would be fetched from DB
+      location: 'Kathmandu',
+      originalBudget: 500000,
+      guestCount: 150
+    };
+  }
+
+  // ✅ NEW: Calculate progress percentage
+  calculateProgress(offers) {
+    if (offers.length < 2) return 0;
+    
+    const organizerOffers = offers.filter(o => o.party === 'organizer' || o.party === 'organizer_ai');
+    const userOffers = offers.filter(o => o.party === 'user');
+    
+    if (organizerOffers.length < 2 || userOffers.length < 1) return 0;
+    
+    const firstOrganizer = organizerOffers[0].amount;
+    const lastOrganizer = organizerOffers[organizerOffers.length - 1].amount;
+    const lastUser = userOffers[userOffers.length - 1].amount;
+    
+    const organizerMovement = Math.abs(firstOrganizer - lastOrganizer) / firstOrganizer;
+    const userMovement = userOffers.length > 1 ? 
+      Math.abs(userOffers[0].amount - lastUser) / userOffers[0].amount : 0;
+    
+    return Math.round((organizerMovement + userMovement) * 50); // Scale to 0-100%
+  }
+
+  // ✅ NEW: Get negotiation status
   async getNegotiationStatus(negotiationId) {
-    const negotiation = this.negotiationHistory.get(negotiationId);
+    const negotiation = this.eventRequestNegotiations.get(negotiationId);
     
     if (!negotiation) {
       return {
@@ -233,129 +263,86 @@ class NegotiationAgent {
     
     return {
       success: true,
-      negotiation: this.sanitizeNegotiation(negotiation),
-      summary: this.generateNegotiationSummary(negotiation)
-    };
-  }
-
-  generateNegotiationSummary(negotiation) {
-    const offers = negotiation.offers;
-    const userOffers = offers.filter(o => o.party === 'user');
-    const aiOffers = offers.filter(o => o.party === 'ai');
-    
-    return {
-      total_rounds: Math.max(userOffers.length, aiOffers.length),
-      user_offers: userOffers.map(o => o.amount),
-      ai_offers: aiOffers.map(o => o.amount),
-      progress: this.calculateProgress(offers),
-      sentiment: this.analyzeSentiment(offers),
-      estimated_outcome: this.predictOutcome(offers)
-    };
-  }
-
-  calculateProgress(offers) {
-    if (offers.length < 2) return 0;
-    
-    const firstOffer = offers[0].amount;
-    const lastOffer = offers[offers.length - 1].amount;
-    const difference = Math.abs(firstOffer - lastOffer);
-    
-    return Math.min(difference / firstOffer, 1);
-  }
-
-  analyzeSentiment(offers) {
-    // Simple sentiment analysis based on offer changes
-    let positive = 0;
-    let negative = 0;
-    
-    for (let i = 1; i < offers.length; i++) {
-      if (offers[i].party === 'user' && offers[i-1].party === 'ai') {
-        if (offers[i].amount > offers[i-1].amount) {
-          positive++;
-        } else {
-          negative++;
+      negotiation: {
+        id: negotiation.id,
+        eventRequestId: negotiation.eventRequestId,
+        status: negotiation.status,
+        currentRound: negotiation.currentRound,
+        totalOffers: negotiation.offers.length,
+        lastOffer: negotiation.offers[negotiation.offers.length - 1],
+        progress: this.calculateProgress(negotiation.offers),
+        metadata: {
+          startedAt: negotiation.metadata.startedAt,
+          timeoutAt: negotiation.metadata.timeoutAt,
+          isActive: negotiation.status === 'organizer_proposed' || negotiation.status === 'countered'
         }
       }
-    }
-    
-    if (positive + negative === 0) return 'neutral';
-    return positive > negative ? 'positive' : 'negative';
+    };
   }
 
-  predictOutcome(offers) {
-    if (offers.length < 3) return 'uncertain';
+  // ✅ NEW: Get all negotiations for an event request
+  async getEventRequestNegotiations(eventRequestId) {
+    const negotiations = Array.from(this.eventRequestNegotiations.values())
+      .filter(neg => neg.eventRequestId === eventRequestId)
+      .map(neg => ({
+        id: neg.id,
+        organizerId: neg.organizerId,
+        status: neg.status,
+        currentRound: neg.currentRound,
+        lastOffer: neg.offers[neg.offers.length - 1],
+        startedAt: neg.metadata.startedAt
+      }));
     
-    const recent = offers.slice(-3);
-    const differences = [];
-    
-    for (let i = 1; i < recent.length; i++) {
-      differences.push(Math.abs(recent[i].amount - recent[i-1].amount));
-    }
-    
-    const avgDifference = differences.reduce((a, b) => a + b, 0) / differences.length;
-    
-    if (avgDifference < 0.01) { // Less than 1% difference
-      return 'likely_agreement';
-    } else if (avgDifference > 0.05) { // More than 5% difference
-      return 'likely_stalemate';
-    }
-    
-    return 'ongoing';
+    return {
+      success: true,
+      count: negotiations.length,
+      negotiations
+    };
   }
 
-  sanitizeNegotiation(negotiation) {
-    // Remove sensitive data if needed
-    const sanitized = { ...negotiation };
-    delete sanitized.strategy;
-    return sanitized;
-  }
-
-  async concludeNegotiation(negotiationId, result, finalAmount = null) {
-    const negotiation = this.negotiationHistory.get(negotiationId);
+  // ✅ NEW: Accept offer manually (user accepts AI's counter)
+  async acceptOffer(negotiationId, userId) {
+    const negotiation = this.eventRequestNegotiations.get(negotiationId);
     
     if (!negotiation) {
       throw new Error('Negotiation not found');
     }
     
+    const lastOffer = negotiation.offers[negotiation.offers.length - 1];
+    
     negotiation.status = 'concluded';
-    negotiation.result = result;
-    negotiation.finalAmount = finalAmount || negotiation.offers[negotiation.offers.length - 1].amount;
+    negotiation.result = 'user_accepted';
+    negotiation.finalAmount = lastOffer.amount;
+    negotiation.concludedBy = userId;
     negotiation.concludedAt = new Date().toISOString();
     
-    this.negotiationHistory.set(negotiationId, negotiation);
-    
-    logger.agent(this.name, `Negotiation ${negotiationId} concluded with result: ${result}`);
+    this.eventRequestNegotiations.set(negotiationId, negotiation);
     
     return {
       success: true,
       negotiationId,
-      result,
       finalAmount: negotiation.finalAmount,
-      concludedAt: negotiation.concludedAt
+      message: 'Offer accepted successfully'
     };
   }
 
-  async getActiveNegotiations(organizerId) {
-    const active = Array.from(this.negotiationHistory.values())
-      .filter(neg => neg.status === 'active')
-      .map(neg => this.sanitizeNegotiation(neg));
+  // ✅ NEW: Get price analysis for event request
+  async getPriceAnalysis(eventType, location, userBudget) {
+    const analysis = this.counterOffer.validateOffer(userBudget, eventType, location);
+    const recommendation = this.counterOffer.getEventTypePriceRecommendation(eventType, location);
     
     return {
       success: true,
-      count: active.length,
-      negotiations: active
-    };
-  }
-
-  async trainOnHistory(historicalData) {
-    logger.agent(this.name, 'Training on historical negotiation data');
-    
-    // In production, this would train a machine learning model
-    return {
-      success: true,
-      trained_samples: historicalData.length,
-      accuracy: 0.85,
-      timestamp: new Date().toISOString()
+      userBudget,
+      marketAnalysis: {
+        estimatedPrice: recommendation.estimatedPrice,
+        basePrice: recommendation.basePrice,
+        locationMultiplier: recommendation.locationMultiplier,
+        season: recommendation.season,
+        seasonMultiplier: recommendation.seasonMultiplier
+      },
+      validation: analysis,
+      suggestions: recommendation.recommendations
     };
   }
 }
