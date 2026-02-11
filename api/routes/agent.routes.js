@@ -5,6 +5,13 @@ const express = require("express");
 const router = express.Router();
 const agentController = require("../controllers/agent.controller");
 
+
+// POST /api/agents/process-event-request
+router.post("/process-event-request", agentController.processEventRequest);
+
+// GET /api/agents/event-suggestions
+router.get("/event-suggestions", agentController.getEventSuggestions);
+
 // ==================== SYSTEM & GENERAL AGENT ROUTES ====================
 
 // GET /api/ai/status
@@ -40,6 +47,14 @@ router.post("/organizer/negotiate", agentController.negotiateBooking);
 
 // POST /api/ai/organizer/plan-event (now has controller method)
 router.post("/organizer/plan-event", agentController.planEvent);
+
+
+// Event Request Negotiation Routes
+router.post('/negotiation/start', agentController.startEventRequestNegotiation);
+router.post('/negotiation/counter', agentController.processUserCounterOffer);
+router.get('/negotiation/:negotiationId/status', agentController.getNegotiationStatus);
+router.post('/negotiation/:negotiationId/accept', agentController.acceptNegotiationOffer);
+router.get('/negotiation/price-analysis', agentController.getEventPriceAnalysis);
 
 // ==================== ADMIN AGENT ROUTES ====================
 
