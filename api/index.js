@@ -1,11 +1,7 @@
 const express = require("express");
 const router = express.Router();
 const agentController = require("./controllers/agent.controller");
-const logger = require("../config/logger"); // <-- ADDED
-
-agentController.initialize().catch((err) => {
-  logger.error(`❌ Failed to initialize AI agents on startup: ${err.message}`);
-});
+const logger = require("../config/logger");
 
 // ==================== MOUNT ALL AGENT ROUTES ====================
 const agentRoutes = require("./routes/agent.routes");

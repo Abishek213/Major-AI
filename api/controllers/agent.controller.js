@@ -3,17 +3,13 @@ const EventRecommendationAgent = require("../../agents/user-agents/event-recomme
 const BookingSupportAgent = require("../../agents/user-agents/booking-support-agent");
 const EventRequestAIAgent = require("../../agents/user-agents/event-request-assistant");
 const NegotiationAgent = require("../../agents/organizer-agents/negotiation-agent");
-const negotiationAgent = new NegotiationAgent();
-negotiationAgent.initialize();
 const PlanningAgent = require("../../agents/organizer-agents/planning-agent");
-const planningAgent = new PlanningAgent();
-planningAgent.initialize().catch((err) => {
-  logger.error("Failed to initialize PlanningAgent:", err.message);
-});
 
 class AgentController {
   constructor() {
     this.bookingSupportAgent = BookingSupportAgent;
+    this.negotiationAgent = null;
+    this.planningAgent = null;
     this.initialized = false;
   }
 
@@ -25,12 +21,22 @@ class AgentController {
 
     try {
       logger.info("Initializing AI agents...");
+
+      // Initialize BookingSupport Agent (singleton)
       await this.bookingSupportAgent.initialize();
-      await planningAgent.initialize();
+
+      // Create and initialize Negotiation Agent
+      this.negotiationAgent = new NegotiationAgent();
+      await this.negotiationAgent.initialize();
+
+      // Create and initialize Planning Agent
+      this.planningAgent = new PlanningAgent();
+      await this.planningAgent.initialize();
+
       this.initialized = true;
-      logger.info("All AI agents initialized successfully");
+      logger.info("✅ All AI agents initialized successfully");
     } catch (error) {
-      logger.error("Error initializing agents:", error);
+      logger.error("❌ Error initializing agents:", error);
       throw error;
     }
   }
@@ -454,7 +460,14 @@ class AgentController {
         `event: ${eventData.event_name}`
       );
 
-      const result = await planningAgent.optimizeEventCreation(eventData);
+      // Ensure agent is initialized
+      if (!this.planningAgent) {
+        logger.warn("Planning agent not initialized, initializing now...");
+        this.planningAgent = new PlanningAgent();
+        await this.planningAgent.initialize();
+      }
+
+      const result = await this.planningAgent.optimizeEventCreation(eventData);
 
       if (!result.success) {
         return res.status(500).json({
@@ -490,8 +503,17 @@ class AgentController {
         `organizer: ${organizerId}`
       );
 
+      // Ensure agent is initialized
+      if (!this.planningAgent) {
+        logger.warn("Planning agent not initialized, initializing now...");
+        this.planningAgent = new PlanningAgent();
+        await this.planningAgent.initialize();
+      }
+
       // Forward to the new planning agent
-      const result = await planningAgent.optimizeEventCreation(eventDetails);
+      const result = await this.planningAgent.optimizeEventCreation(
+        eventDetails
+      );
 
       if (!result.success) {
         return res.status(500).json({
@@ -594,7 +616,14 @@ class AgentController {
 
       console.log("🤖 Starting negotiation for event request:", eventRequestId);
 
-      const result = await negotiationAgent.startEventRequestNegotiation(
+      // Ensure agent is initialized
+      if (!this.negotiationAgent) {
+        logger.warn("Negotiation agent not initialized, initializing now...");
+        this.negotiationAgent = new NegotiationAgent();
+        await this.negotiationAgent.initialize();
+      }
+
+      const result = await this.negotiationAgent.startEventRequestNegotiation(
         eventRequestId,
         organizerId,
         organizerOffer,
@@ -618,7 +647,14 @@ class AgentController {
 
       console.log("🤖 Processing user counter:", { negotiationId, userOffer });
 
-      const result = await negotiationAgent.processUserCounter(
+      // Ensure agent is initialized
+      if (!this.negotiationAgent) {
+        logger.warn("Negotiation agent not initialized, initializing now...");
+        this.negotiationAgent = new NegotiationAgent();
+        await this.negotiationAgent.initialize();
+      }
+
+      const result = await this.negotiationAgent.processUserCounter(
         negotiationId,
         userOffer,
         userMessage
@@ -638,7 +674,16 @@ class AgentController {
     try {
       const { negotiationId } = req.params;
 
-      const result = await negotiationAgent.getNegotiationStatus(negotiationId);
+      // Ensure agent is initialized
+      if (!this.negotiationAgent) {
+        logger.warn("Negotiation agent not initialized, initializing now...");
+        this.negotiationAgent = new NegotiationAgent();
+        await this.negotiationAgent.initialize();
+      }
+
+      const result = await this.negotiationAgent.getNegotiationStatus(
+        negotiationId
+      );
 
       res.json(result);
     } catch (error) {
@@ -655,7 +700,17 @@ class AgentController {
       const { negotiationId } = req.params;
       const userId = req.user?._id;
 
-      const result = await negotiationAgent.acceptOffer(negotiationId, userId);
+      // Ensure agent is initialized
+      if (!this.negotiationAgent) {
+        logger.warn("Negotiation agent not initialized, initializing now...");
+        this.negotiationAgent = new NegotiationAgent();
+        await this.negotiationAgent.initialize();
+      }
+
+      const result = await this.negotiationAgent.acceptOffer(
+        negotiationId,
+        userId
+      );
 
       res.json(result);
     } catch (error) {
@@ -671,7 +726,14 @@ class AgentController {
     try {
       const { eventType, location, budget } = req.query;
 
-      const result = await negotiationAgent.getPriceAnalysis(
+      // Ensure agent is initialized
+      if (!this.negotiationAgent) {
+        logger.warn("Negotiation agent not initialized, initializing now...");
+        this.negotiationAgent = new NegotiationAgent();
+        await this.negotiationAgent.initialize();
+      }
+
+      const result = await this.negotiationAgent.getPriceAnalysis(
         eventType,
         location,
         parseFloat(budget)
@@ -789,6 +851,8 @@ class AgentController {
         timestamp: new Date().toISOString(),
         components: {
           bookingSupport: bookingSupportStatus,
+          negotiation: this.negotiationAgent ? "ready" : "not_initialized",
+          planning: this.planningAgent ? "ready" : "not_initialized",
         },
       });
     } catch (error) {
@@ -831,8 +895,8 @@ class AgentController {
             },
           ],
           organizer: [
-            { name: "planning-agent", status: "planned", phase: "2.1" },
-            { name: "negotiation-agent", status: "planned", phase: "2.2" },
+            { name: "planning-agent", status: "active", phase: "2.1" },
+            { name: "negotiation-agent", status: "active", phase: "2.2" },
             { name: "dashboard-assistant", status: "planned", phase: "2.3" },
           ],
           admin: [
@@ -880,14 +944,14 @@ class AgentController {
           {
             name: "planning-agent",
             type: "organizer",
-            status: "planned",
+            status: this.planningAgent ? "active" : "not_initialized",
             phase: "2.1",
             description: "Automated event planning assistance",
           },
           {
             name: "negotiation-agent",
             type: "organizer",
-            status: "planned",
+            status: this.negotiationAgent ? "active" : "not_initialized",
             phase: "2.2",
             description: "Price negotiation facilitation",
           },
