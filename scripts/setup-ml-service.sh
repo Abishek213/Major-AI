@@ -101,7 +101,6 @@ LOG_LEVEL=INFO
 # DB_NAME=eventa_ml
 
 # External APIs
-# OPENAI_API_KEY=your_key_here
 # HUGGINGFACE_TOKEN=your_token_here
 EOL
 

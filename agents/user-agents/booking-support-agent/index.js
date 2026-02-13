@@ -46,7 +46,7 @@ class BookingSupportAgent {
         logger.info(`📚 Loaded ${documentCount} FAQ chunks into vector store`);
       } catch (error) {
         logger.warn(
-          `⚠️ Could not load FAQ embeddings (OpenAI quota): ${error.message}`
+          `⚠️ Could not load FAQ embeddings (Ollama error or offline): ${error.message}`
         );
         logger.info(
           "✅ FAQ will use local keyword search instead of embeddings"
@@ -61,7 +61,7 @@ class BookingSupportAgent {
           `LangChain not ready: ${langchainHealth.message || "Unknown error"}`
         );
       }
-      logger.info("🔧 LangChain + OpenAI verified and ready");
+      logger.info("🔧 LangChain + Ollama verified and ready");
 
       await this.logAction("system_alert", null, {
         event: "agent_initialized",
@@ -218,7 +218,7 @@ class BookingSupportAgent {
             );
           }
         }
-      } catch (openaiError) {
+      } catch (vectorError) {
         logger.warn("⚠️ Vector search failed, using local FAQ fallback");
         usedLocalFAQ = true;
 
@@ -263,9 +263,9 @@ class BookingSupportAgent {
 
         const aiResponse = await chatModel.invoke(messages);
         responseText = aiResponse.content;
-        logger.info(`🤖 OpenAI response successful`);
-      } catch (openaiError) {
-        logger.warn("⚠️ OpenAI chat failed, using local response generator");
+        logger.info(`🤖 Ollama response successful`);
+      } catch (ollamaError) {
+        logger.warn("⚠️ Ollama chat failed, using local response generator");
 
         const queryLower = userMessage.toLowerCase();
 
@@ -393,7 +393,7 @@ class BookingSupportAgent {
           faqChunksUsed: faqChunksCount,
           responseTimeMs: responseTime,
           usedFallback: usedLocalFAQ,
-          usedOpenAIFallback: responseText.includes("🤖 Local fallback"),
+          usedOllamaFallback: responseText.includes("🤖 Local fallback"),
         }
       );
 
@@ -410,7 +410,7 @@ class BookingSupportAgent {
           context: {
             faqChunksUsed: faqChunksCount,
             usedFallback: usedLocalFAQ,
-            usedOpenAIFallback: responseText.includes("Local fallback"),
+            usedOllamaFallback: responseText.includes("Local fallback"),
           },
           performance: {
             responseTimeMs: responseTime,

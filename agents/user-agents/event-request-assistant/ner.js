@@ -1,29 +1,29 @@
-const { OpenAI } = require('openai');
-const { logger } = require('../../../shared/utils/logger');
+const { OpenAI } = require("openai");
+const { logger } = require("../../../config/logger");
 
 class NERProcessor {
-    constructor() {
-        this.openai = new OpenAI({
-            apiKey: process.env.OPENAI_API_KEY
-        });
+  constructor() {
+    this.openai = new OpenAI({
+      apiKey: process.env.OPENAI_API_KEY,
+    });
 
-        this.entityTypes = [
-            'event_type',
-            'location',
-            'date',
-            'budget',
-            'guests',
-            'theme',
-            'requirements'
-        ];
-    }
+    this.entityTypes = [
+      "event_type",
+      "location",
+      "date",
+      "budget",
+      "guests",
+      "theme",
+      "requirements",
+    ];
+  }
 
-    /**
-     * Process natural language and extract entities
-     */
-    async processNaturalLanguage(text) {
-        try {
-            const prompt = `
+  /**
+   * Process natural language and extract entities
+   */
+  async processNaturalLanguage(text) {
+    try {
+      const prompt = `
             Extract the following entities from the event request:
             "${text}"
             
@@ -193,103 +193,228 @@ class NERProcessor {
             date: /(\d{4}-\d{2}-\d{2})|(\d{1,2}\/\d{1,2}\/\d{4})/
 
         };
+      }
 
-        // Fix budget extraction - look for "budget" keyword specifically
-        const budgetRegex = /budget\s*(?:of|is|:)?\s*(\d+(?:,\d{3})*(?:\.\d{2})?)/i;
-        const budgetMatch = text.match(budgetRegex);
+      // Fallback to regex-based extraction if OpenAI fails
+      // return this.fallbackExtraction(text);
+    }
+  }
 
-        if (budgetMatch) {
-            entities.budget = parseInt(budgetMatch[1].replace(/,/g, ''));
-            console.log(`✅ Extracted budget: ${entities.budget}`);
-        } else {
-            // Look for numbers after currency indicators
-            const currencyRegex = /(?:rs\.?|npr|usd|\$)\s*(\d+(?:,\d{3})*(?:\.\d{2})?)/i;
-            const currencyMatch = text.match(currencyRegex);
+  parseAndValidateEntities(jsonString) {
+    try {
+      const entities = JSON.parse(jsonString);
 
-            if (currencyMatch) {
-                entities.budget = parseInt(currencyMatch[1].replace(/,/g, ''));
-                console.log(`✅ Extracted budget via currency: ${entities.budget}`);
-            } else {
-                // Find the largest number that's NOT the guest count
-                const allNumbers = text.match(/\d+(?:,\d{3})*(?:\.\d{2})?/g) || [];
-                const numbers = allNumbers.map(num => parseInt(num.replace(/,/g, '')));
+      // Validate and clean entities
+      const validated = {
+        eventType: entities.event_type || "general",
+        locations: Array.isArray(entities.locations)
+          ? entities.locations
+          : entities.locations
+          ? [entities.locations]
+          : [],
+        date: this.parseDate(entities.date),
+        budget: this.extractBudget(entities.budget),
+        guests: this.extractNumber(entities.guests),
+        theme: entities.theme || "",
+        requirements: entities.requirements || "",
+        description: entities.description || "",
+      };
 
-                if (numbers.length > 0) {
-                    // Sort descending, pick the largest (likely budget)
-                    numbers.sort((a, b) => b - a);
-                    entities.budget = numbers[0];
-                    console.log(`✅ Extracted largest number as budget: ${entities.budget}`);
-                }
-            }
-        }
+      // Clean locations
+      validated.locations = validated.locations
+        .map((loc) => loc.trim())
+        .filter((loc) => loc.length > 0);
 
-        // Extract guests - fix to avoid conflict with budget
-        const guestsRegex = /(\d+)\s*(?:guests?|people|persons|attendees|participants|individuals)\b/i;
-        const guestsMatch = text.match(guestsRegex);
+      return validated;
+    } catch (error) {
+      logger.error(`Failed to parse NER results: ${error.message}`);
+      return this.fallbackExtraction(jsonString);
+    }
+  }
 
-        if (guestsMatch) {
-            entities.guests = parseInt(guestsMatch[1]);
-            console.log(`✅ Extracted guests: ${entities.guests}`);
-        } else {
-            // Alternative pattern: "for X people"
-            const altGuestsRegex = /for\s+(\d+)\s+(?:people|guests|persons)\b/i;
-            const altMatch = text.match(altGuestsRegex);
-            if (altMatch) {
-                entities.guests = parseInt(altMatch[1]);
-                console.log(`✅ Extracted guests (alt): ${entities.guests}`);
-            }
-        }
+  fallbackExtraction(text) {
+    const lowerText = text.toLowerCase();
 
-        // Extract date
-        const dateMatch = text.match(patterns.date);
-        if (dateMatch) {
-            entities.date = dateMatch[0];
+    console.log("DEBUG NER: Running fallback extraction for:", text);
+    // Ensure text is a string
+    const textStr = text || "";
+    // const textLower = textStr.toLowerCase();
+    const entities = {
+      eventType: "general",
+      locations: [],
+      date: null,
+      budget: null,
+      guests: null,
+      theme: "",
+      requirements: "",
+      description: text,
+    };
 
-        }
+    const eventKeywords = [
+      "wedding",
+      "birthday",
+      "conference",
+      "meeting",
+      "seminar",
+      "business",
+      "party",
+      "anniversary",
+      "workshop",
+      "concert",
+      "festival",
+    ];
+    // entities.eventType = eventKeywords.find(kw => text.toLowerCase().includes(kw)) || "general";
+    for (const keyword of eventKeywords) {
+      if (lowerText.includes(keyword)) {
+        entities.eventType = keyword;
+        break;
+      }
+    }
+    const locationKeywords = [
+      "Kathmandu",
+      "Pokhara",
+      "Lalitpur",
+      "Biratnagar",
+      "Birgunj",
+      "Dharan",
+      "Nepalgunj",
+      "Hetauda",
+    ];
+    // entities.locations = cities.filter(city => text.toLowerCase().includes(city.toLowerCase()));
+    // Debug: Show what we're looking for
+    console.log("Looking for locations in:", lowerText);
 
-        return entities;
+    locationKeywords.forEach((location) => {
+      // Use regex for better matching (case insensitive, whole word)
+      const regex = new RegExp(`\\b${location}\\b`, "i");
+      if (regex.test(lowerText)) {
+        console.log(`✅ Found location: ${location}`);
+        entities.locations.push(location);
+      }
+    });
 
+    // If still no locations found, try harder
 
-        // return {
-        //     success: true,
-        //     extractedEntities: entities,
-        //     error: null
-        // };
+    if (entities.locations.length === 0) {
+      // Check for location-like words (capitalized, common city names)
+      const locationWords = text
+        .split(/\s+/)
+        .filter((word) => /^[A-Z][a-z]+$/.test(word) && word.length > 3);
+      console.log("Potential location words:", locationWords);
+
+      // Add first capitalized word as potential location
+      if (locationWords.length > 0) {
+        entities.locations.push(locationWords[0].toLowerCase());
+      }
     }
 
-    parseDate(dateString) {
-        if (!dateString) return null;
+    // Simple regex patterns for fallback
+    const patterns = {
+      budget: /(\$|₹|Rs\.?|USD\s*)?(\d+(?:,\d{3})*(?:\.\d{2})?)/i,
+      guests: /(\d+)\s*(?:guests?|people|persons|attendees)/i,
+      date: /(\d{4}-\d{2}-\d{2})|(\d{1,2}\/\d{1,2}\/\d{4})/,
+    };
 
-        try {
-            const date = new Date(dateString);
-            return isNaN(date.getTime()) ? null : date.toISOString().split('T')[0];
-        } catch (error) {
-            return null;
+    // Fix budget extraction - look for "budget" keyword specifically
+    const budgetRegex = /budget\s*(?:of|is|:)?\s*(\d+(?:,\d{3})*(?:\.\d{2})?)/i;
+    const budgetMatch = text.match(budgetRegex);
+
+    if (budgetMatch) {
+      entities.budget = parseInt(budgetMatch[1].replace(/,/g, ""));
+      console.log(`✅ Extracted budget: ${entities.budget}`);
+    } else {
+      // Look for numbers after currency indicators
+      const currencyRegex =
+        /(?:rs\.?|npr|usd|\$)\s*(\d+(?:,\d{3})*(?:\.\d{2})?)/i;
+      const currencyMatch = text.match(currencyRegex);
+
+      if (currencyMatch) {
+        entities.budget = parseInt(currencyMatch[1].replace(/,/g, ""));
+        console.log(`✅ Extracted budget via currency: ${entities.budget}`);
+      } else {
+        // Find the largest number that's NOT the guest count
+        const allNumbers = text.match(/\d+(?:,\d{3})*(?:\.\d{2})?/g) || [];
+        const numbers = allNumbers.map((num) =>
+          parseInt(num.replace(/,/g, ""))
+        );
+
+        if (numbers.length > 0) {
+          // Sort descending, pick the largest (likely budget)
+          numbers.sort((a, b) => b - a);
+          entities.budget = numbers[0];
+          console.log(
+            `✅ Extracted largest number as budget: ${entities.budget}`
+          );
         }
+      }
     }
 
-    extractBudget(budgetString) {
-        if (!budgetString) return null;
+    // Extract guests - fix to avoid conflict with budget
+    const guestsRegex =
+      /(\d+)\s*(?:guests?|people|persons|attendees|participants|individuals)\b/i;
+    const guestsMatch = text.match(guestsRegex);
 
-        // Extract numbers from budget string
-        const matches = budgetString.match(/\d+(?:,\d{3})*(?:\.\d{2})?/);
-        if (matches) {
-            return parseFloat(matches[0].replace(/,/g, ''));
-        }
-        return null;
+    if (guestsMatch) {
+      entities.guests = parseInt(guestsMatch[1]);
+      console.log(`✅ Extracted guests: ${entities.guests}`);
+    } else {
+      // Alternative pattern: "for X people"
+      const altGuestsRegex = /for\s+(\d+)\s+(?:people|guests|persons)\b/i;
+      const altMatch = text.match(altGuestsRegex);
+      if (altMatch) {
+        entities.guests = parseInt(altMatch[1]);
+        console.log(`✅ Extracted guests (alt): ${entities.guests}`);
+      }
     }
 
-    extractNumber(text) {
-        if (!text) return null;
-        const match = text.match(/\d+/);
-        return match ? parseInt(match[0]) : null;
+    // Extract date
+    const dateMatch = text.match(patterns.date);
+    if (dateMatch) {
+      entities.date = dateMatch[0];
     }
+
+    return entities;
+
+    // return {
+    //     success: true,
+    //     extractedEntities: entities,
+    //     error: null
+    // };
+  }
+
+  parseDate(dateString) {
+    if (!dateString) return null;
+
+    try {
+      const date = new Date(dateString);
+      return isNaN(date.getTime()) ? null : date.toISOString().split("T")[0];
+    } catch (error) {
+      return null;
+    }
+  }
+
+  extractBudget(budgetString) {
+    if (!budgetString) return null;
+
+    // Extract numbers from budget string
+    const matches = budgetString.match(/\d+(?:,\d{3})*(?:\.\d{2})?/);
+    if (matches) {
+      return parseFloat(matches[0].replace(/,/g, ""));
+    }
+    return null;
+  }
+
+  extractNumber(text) {
+    if (!text) return null;
+    const match = text.match(/\d+/);
+    return match ? parseInt(match[0]) : null;
+  }
 }
 
 // Create singleton instance
 const nerProcessor = new NERProcessor();
 
 module.exports = {
-    processNaturalLanguage: (text) => nerProcessor.processNaturalLanguage(text),
-    NERProcessor
+  processNaturalLanguage: (text) => nerProcessor.processNaturalLanguage(text),
+  NERProcessor,
 };
