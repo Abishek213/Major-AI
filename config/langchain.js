@@ -1,4 +1,3 @@
-const { ChatOpenAI } = require("@langchain/openai");
 const { ChatOllama } = require("@langchain/community/chat_models/ollama");
 const {
   HumanMessage,
@@ -6,73 +5,47 @@ const {
   AIMessage,
 } = require("@langchain/core/messages");
 
+/**
+ * LangChain Configuration – Ollama Only
+ *
+ * Purpose: Provide LLM capabilities via local Ollama models.
+ * No API keys required – runs entirely offline.
+ */
 class LangChainConfig {
   constructor() {
-    this.openaiApiKey = process.env.OPENAI_API_KEY;
-    this.openaiModel = process.env.OPENAI_MODEL || "gpt-3.5-turbo";
-
     this.ollamaBaseUrl =
       process.env.OLLAMA_BASE_URL || "http://localhost:11434";
     this.ollamaModel = process.env.OLLAMA_MODEL || "llama3.2"; // or mistral, phi3
 
-    this.provider = process.env.LLM_PROVIDER || "ollama"; // "ollama" | "openai" | "mock"
-
     this.defaultTemperature = 0.7;
-    this.isConfigured = this.checkConfiguration();
+    // Always true – Ollama is assumed to be running locally
+    this.isConfigured = true;
   }
 
-  checkConfiguration() {
-    if (this.provider === "openai") {
-      return !!this.openaiApiKey;
-    } else if (this.provider === "ollama") {
-      // Ollama doesn't need API key, just needs to be running
-      return true;
-    }
-    return false;
-  }
-
+  /**
+   * Returns a ChatOllama instance.
+   * Falls back to a mock model if Ollama cannot be initialised.
+   */
   getChatModel(options = {}) {
-    const provider = options.provider || this.provider;
-
     try {
-      if (provider === "openai" && this.openaiApiKey) {
-        return this.getOpenAIModel(options);
-      } else if (provider === "ollama") {
-        return this.getOllamaModel(options);
-      } else {
-        console.warn(`Provider "${provider}" not available. Using mock model.`);
-        return this.getMockModel();
-      }
+      return new ChatOllama({
+        baseUrl: options.baseUrl || this.ollamaBaseUrl,
+        model: options.modelName || this.ollamaModel,
+        temperature: options.temperature ?? this.defaultTemperature,
+        numCtx: options.maxTokens || 2048, // Context window size
+      });
     } catch (error) {
-      console.error(`Error initializing ${provider} model:`, error.message);
-      console.warn("Falling back to mock model");
+      console.error(`Error initializing Ollama model: ${error.message}`);
+      console.warn(
+        "Falling back to mock model – install Ollama for real AI features"
+      );
       return this.getMockModel();
     }
   }
 
-  getOpenAIModel(options = {}) {
-    if (!this.openaiApiKey) {
-      throw new Error("OpenAI API key not configured");
-    }
-
-    return new ChatOpenAI({
-      openAIApiKey: this.openaiApiKey,
-      modelName: options.modelName || this.openaiModel,
-      temperature: options.temperature ?? this.defaultTemperature,
-      maxTokens: options.maxTokens || 1000,
-      timeout: 30000,
-    });
-  }
-
-  getOllamaModel(options = {}) {
-    return new ChatOllama({
-      baseUrl: options.baseUrl || this.ollamaBaseUrl,
-      model: options.modelName || this.ollamaModel,
-      temperature: options.temperature ?? this.defaultTemperature,
-      numCtx: options.maxTokens || 2048, // Context window size
-    });
-  }
-
+  /**
+   * Mock model for when Ollama is not available.
+   */
   getMockModel() {
     return {
       invoke: async (messages) => {
@@ -81,12 +54,15 @@ class LangChainConfig {
           typeof lastMessage === "string" ? lastMessage : lastMessage.content;
 
         return {
-          content: `[MOCK RESPONSE] Received: "${userQuery}". Configure Ollama (free) or OpenAI for real AI responses.`,
+          content: `[MOCK RESPONSE] Received: "${userQuery}".\nInstall Ollama (https://ollama.ai) and run "ollama pull ${this.ollamaModel}" for real AI responses.`,
         };
       },
     };
   }
 
+  /**
+   * Returns the appropriate system prompt for the given agent type.
+   */
   createAgentPrompt(agentType) {
     const prompts = {
       "event-recommendation":
@@ -124,6 +100,9 @@ Format: Specific percentage savings, actionable steps, and trade-off analysis.`,
     return prompts[agentType] || "You are a helpful AI assistant.";
   }
 
+  /**
+   * Formats conversation history into LangChain message objects.
+   */
   formatConversationHistory(history, maxMessages = 5) {
     if (!Array.isArray(history) || history.length === 0) return [];
 
@@ -137,6 +116,9 @@ Format: Specific percentage savings, actionable steps, and trade-off analysis.`,
       .filter(Boolean);
   }
 
+  /**
+   * Builds a complete message chain for the LLM.
+   */
   buildMessageChain(
     systemPrompt,
     conversationHistory = [],
@@ -163,27 +145,27 @@ Format: Specific percentage savings, actionable steps, and trade-off analysis.`,
     return messages;
   }
 
+  /**
+   * Returns the current health status of the LLM provider.
+   */
   checkHealth() {
     return {
-      provider: this.provider,
+      provider: "ollama",
       configured: this.isConfigured,
       ollama: {
         baseUrl: this.ollamaBaseUrl,
         model: this.ollamaModel,
-        available: this.provider === "ollama",
+        available: true, // We assume Ollama is running – actual check would need a ping
       },
-      openai: {
-        model: this.openaiModel,
-        apiKeyPresent: !!this.openaiApiKey,
-        available: this.provider === "openai" && !!this.openaiApiKey,
-      },
-      status: this.isConfigured ? "ready" : "mock_mode",
-      recommendation: !this.openaiApiKey
-        ? "Install Ollama (free) for AI features: https://ollama.ai"
-        : "OpenAI configured (paid tier)",
+      status: "ready",
+      recommendation:
+        "Ensure Ollama is running with `ollama serve` and the model is pulled.",
     };
   }
 
+  /**
+   * Tests the connection to Ollama by sending a simple prompt.
+   */
   async testConnection() {
     try {
       const model = this.getChatModel();
@@ -193,16 +175,16 @@ Format: Specific percentage savings, actionable steps, and trade-off analysis.`,
 
       return {
         success: true,
-        provider: this.provider,
+        provider: "ollama",
         response: response.content,
-        message: "LLM connection successful",
+        message: "Ollama connection successful",
       };
     } catch (error) {
       return {
         success: false,
-        provider: this.provider,
+        provider: "ollama",
         error: error.message,
-        message: "LLM connection failed",
+        message: "Ollama connection failed – is the server running?",
       };
     }
   }

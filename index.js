@@ -110,7 +110,7 @@ app.get("/", (req, res) => {
     service: "Eventa AI Agent Service",
     version: "1.0.0",
     status: "running",
-    phase: "1.2 - Booking Support Agent",
+    phase: "1.2 - Booking Support Agent (Ollama powered)",
     health: "/health",
     timestamp: new Date().toISOString(),
   });
@@ -158,8 +158,19 @@ async function startServer() {
       process.env.MONGODB_URI = "mongodb://localhost:27017/Eventa";
     }
 
-    if (!process.env.OPENAI_API_KEY) {
-      console.warn("⚠️  OPENAI_API_KEY not set, some features will be limited");
+    // Optional: show Ollama configuration hint
+    if (!process.env.OLLAMA_BASE_URL) {
+      console.log(
+        "ℹ️  OLLAMA_BASE_URL not set, using default: http://localhost:11434"
+      );
+    }
+    if (!process.env.OLLAMA_MODEL) {
+      console.log("ℹ️  OLLAMA_MODEL not set, using default: llama3.2");
+    }
+    if (!process.env.OLLAMA_EMBEDDING_MODEL) {
+      console.log(
+        "ℹ️  OLLAMA_EMBEDDING_MODEL not set, using default: nomic-embed-text"
+      );
     }
 
     // Connect to MongoDB with timeout

@@ -4,8 +4,12 @@ const BookingSupportAgent = require("../../agents/user-agents/booking-support-ag
 const EventRequestAIAgent = require("../../agents/user-agents/event-request-assistant");
 const NegotiationAgent = require("../../agents/organizer-agents/negotiation-agent");
 const negotiationAgent = new NegotiationAgent();
-
-negotiationAgent.initialize(); // Initialize the negotiation agent when the controller is loaded
+negotiationAgent.initialize();
+const PlanningAgent = require("../../agents/organizer-agents/planning-agent");
+const planningAgent = new PlanningAgent();
+planningAgent.initialize().catch((err) => {
+  logger.error("Failed to initialize PlanningAgent:", err.message);
+});
 
 class AgentController {
   constructor() {
@@ -22,6 +26,7 @@ class AgentController {
     try {
       logger.info("Initializing AI agents...");
       await this.bookingSupportAgent.initialize();
+      await planningAgent.initialize();
       this.initialized = true;
       logger.info("All AI agents initialized successfully");
     } catch (error) {
@@ -30,17 +35,22 @@ class AgentController {
     }
   }
 
-  // ==================== USER AGENTS ====================
+  // ==========================================================
+  // ==================== USER AGENTS =========================
+  // ==================== Event Request AGENT =================
   async processEventRequest(req, res) {
     try {
-      console.log("📥 AI Agent - Full request body:", JSON.stringify(req.body, null, 2));
+      console.log(
+        "📥 AI Agent - Full request body:",
+        JSON.stringify(req.body, null, 2)
+      );
 
       // Accept BOTH parameter names for compatibility
       const {
         userId,
-        naturalLanguage,      // From Backend
-        requestText,       // Alternative parameter name
-        structuredData       // Optional - for fallback or additional context
+        naturalLanguage, // From Backend
+        requestText, // Alternative parameter name
+        structuredData, // Optional - for fallback or additional context
       } = req.body;
 
       // Use naturalLanguage if provided, otherwise requestText
@@ -58,20 +68,24 @@ class AgentController {
         return res.status(400).json({
           success: false,
           error: "userId is required",
-          receivedFields: Object.keys(req.body)
+          receivedFields: Object.keys(req.body),
         });
       }
 
       if (!userRequestText) {
         return res.status(400).json({
           success: false,
-          error: "Either naturalLanguage/requestText or structuredData with eventType is required",
+          error:
+            "Either naturalLanguage/requestText or structuredData with eventType is required",
           help: "Send either naturalLanguage or structuredData.eventType",
-          received: req.body
+          received: req.body,
         });
       }
 
-      console.log("🤖 AI Agent - Processing text:", userRequestText.substring(0, 100) + "...");
+      console.log(
+        "🤖 AI Agent - Processing text:",
+        userRequestText.substring(0, 100) + "..."
+      );
 
       // Import and use the agent
       const agent = new EventRequestAIAgent();
@@ -83,11 +97,17 @@ class AgentController {
         return this.getFallbackResponse(userId, userRequestText);
       }
 
-      console.log(`✅ AI processed. Event type: ${result.data.extractedEntities?.eventType}`);
+      console.log(
+        `✅ AI processed. Event type: ${result.data.extractedEntities?.eventType}`
+      );
       console.log(`✅ Budget: ${result.data.extractedEntities?.budget}`);
-      console.log(`✅ Location: ${result.data.extractedEntities?.locations?.[0]}`);
+      console.log(
+        `✅ Location: ${result.data.extractedEntities?.locations?.[0]}`
+      );
       console.log(`✅ Guests: ${result.data.extractedEntities?.guests}`);
-      console.log(`✅ Organizers matched: ${result.data.matchedOrganizers?.length || 0}`);
+      console.log(
+        `✅ Organizers matched: ${result.data.matchedOrganizers?.length || 0}`
+      );
 
       res.json({
         success: true,
@@ -97,9 +117,8 @@ class AgentController {
         budgetAnalysis: result.data.budgetAnalysis || {},
         aiSuggestions: result.data.aiSuggestions || {},
         timestamp: new Date().toISOString(),
-        agentVersion: "1.0.0"
+        agentVersion: "1.0.0",
       });
-
     } catch (error) {
       console.error("🔥 AI Agent - Unhandled error:", error);
       return this.getFallbackResponse(
@@ -123,8 +142,14 @@ class AgentController {
 
     // Extract location
     let location = "unknown";
-    const locations = ["kathmandu", "pokhara", "chitwan", "lalitpur", "bhaktapur"];
-    locations.forEach(loc => {
+    const locations = [
+      "kathmandu",
+      "pokhara",
+      "chitwan",
+      "lalitpur",
+      "bhaktapur",
+    ];
+    locations.forEach((loc) => {
       if (lowerText.includes(loc)) location = loc;
     });
 
@@ -139,43 +164,44 @@ class AgentController {
         eventType,
         locations: [location],
         budget,
-        description: userRequest
+        description: userRequest,
       },
       matchedOrganizers: [
         {
           id: "fallback_org_1",
-          name: `${eventType.charAt(0).toUpperCase() + eventType.slice(1)} Specialists`,
+          name: `${
+            eventType.charAt(0).toUpperCase() + eventType.slice(1)
+          } Specialists`,
           matchPercentage: 75,
           expertise: [eventType],
           location: location,
           rating: 4.3,
-          priceRange: [budget * 0.7 || 100000, budget * 1.3 || 500000]
-        }
+          priceRange: [budget * 0.7 || 100000, budget * 1.3 || 500000],
+        },
       ],
       budgetAnalysis: {
         userBudget: budget,
         industryAverage: budget * 1.2 || 0,
         feasibility: budget > 0 ? "good" : "unknown",
-        recommendedBudget: budget || 0
+        recommendedBudget: budget || 0,
       },
       aiSuggestions: {
         budget: budget > 0 ? "Budget specified" : "Consider adding a budget",
-        location: location !== "unknown" ? `Great choice of ${location}` : "Add location for better matches"
+        location:
+          location !== "unknown"
+            ? `Great choice of ${location}`
+            : "Add location for better matches",
       },
       timestamp: new Date().toISOString(),
       agentVersion: "1.0.0-fallback",
-      note: "Using rule-based extraction (OpenAI unavailable)"
+      note: "Using rule-based extraction (OpenAI unavailable)",
     };
   }
 
+  // ==================== Event Recommendation AGENT ==========
   async getEventSuggestions(req, res) {
     try {
-      const {
-        eventType,
-        budget,
-        location,
-        date
-      } = req.query;
+      const { eventType, budget, location, date } = req.query;
 
       logger.agent(
         "event-request-assistant",
@@ -185,14 +211,14 @@ class AgentController {
 
       // Create mock entities based on query params
       const entities = {
-        eventType: eventType || 'general',
+        eventType: eventType || "general",
         locations: location ? [location] : [],
         budget: budget ? parseFloat(budget) : null,
         date: date || null,
         guests: null,
-        theme: '',
-        requirements: '',
-        description: `${eventType} event in ${location}`
+        theme: "",
+        requirements: "",
+        description: `${eventType} event in ${location}`,
       };
 
       const agent = new EventRequestAIAgent();
@@ -202,19 +228,16 @@ class AgentController {
         success: true,
         matchedOrganizers,
         query: { eventType, location, budget, date },
-        timestamp: new Date().toISOString()
+        timestamp: new Date().toISOString(),
       });
-
     } catch (error) {
       logger.error("Event suggestions error:", error.message);
       res.status(500).json({
         success: false,
-        error: "Failed to get event suggestions"
+        error: "Failed to get event suggestions",
       });
     }
   }
-
-  // ==================== BOOKING SUPPORT AGENT ====================
 
   async postRecommendations(req, res) {
     try {
@@ -256,6 +279,7 @@ class AgentController {
     }
   }
 
+  // ==================== BOOKING SUPPORT AGENT ===============
   async chatBookingSupport(req, res) {
     const startTime = Date.now();
 
@@ -408,26 +432,91 @@ class AgentController {
     }
   }
 
+  // ==========================================================
   // ==================== ORGANIZER AGENTS ====================
+  // ==================== Event Planning Agent ================
+  async getPlanningSuggestions(req, res) {
+    try {
+      const eventData = req.body;
+
+      // Basic validation
+      if (!eventData || !eventData.event_name || !eventData.category) {
+        return res.status(400).json({
+          success: false,
+          error: "Missing required fields: event_name, category",
+          received: eventData,
+        });
+      }
+
+      logger.agent(
+        "planning-agent",
+        "Received planning request",
+        `event: ${eventData.event_name}`
+      );
+
+      const result = await planningAgent.optimizeEventCreation(eventData);
+
+      if (!result.success) {
+        return res.status(500).json({
+          success: false,
+          error: result.error || "Planning optimization failed",
+        });
+      }
+
+      res.json({
+        success: true,
+        data: result.data,
+        message: "Event planning suggestions generated successfully",
+        timestamp: new Date().toISOString(),
+        agentVersion: "3.0.0",
+      });
+    } catch (error) {
+      logger.error("Planning suggestions error:", error.message);
+      res.status(500).json({
+        success: false,
+        error: error.message,
+        stack: process.env.NODE_ENV === "development" ? error.stack : undefined,
+      });
+    }
+  }
 
   async planEvent(req, res) {
     try {
       const { eventDetails, organizerId } = req.body;
+
       logger.agent(
         "planning-agent",
-        "planning event",
+        "Legacy planEvent called",
         `organizer: ${organizerId}`
       );
+
+      // Forward to the new planning agent
+      const result = await planningAgent.optimizeEventCreation(eventDetails);
+
+      if (!result.success) {
+        return res.status(500).json({
+          success: false,
+          error: result.error || "Planning failed",
+        });
+      }
+
+      // Format response to match legacy expectations if needed
       res.json({
         success: true,
         organizerId,
         eventDetails,
         plan: {
-          status: "pending_implementation",
-          phase: "2.1",
-          timeline: "TBD",
-          budget: "TBD",
-          tasks: [],
+          status: "optimized",
+          phase: "3.0",
+          timeline: result.data.suggestions.dateTime.suggestedDayOfWeek,
+          budget: {
+            suggested: result.data.suggestions.price.suggestedPrice,
+            range: result.data.suggestions.price.priceRange,
+          },
+          tags: result.data.suggestions.tags.suggestedTags,
+          totalSlots: result.data.suggestions.totalSlots.suggestedSlots,
+          recommendations: result.data.recommendations,
+          confidence: result.data.confidence.overall,
         },
       });
     } catch (error) {
@@ -440,6 +529,7 @@ class AgentController {
     }
   }
 
+  // ==================== Dashboard assistant Agent ===========
   async getOrganizerDashboard(req, res) {
     try {
       const { organizerId } = req.params;
@@ -499,23 +589,24 @@ class AgentController {
 
   async startEventRequestNegotiation(req, res) {
     try {
-      const { eventRequestId, organizerId, organizerOffer, organizerMessage } = req.body;
-      
+      const { eventRequestId, organizerId, organizerOffer, organizerMessage } =
+        req.body;
+
       console.log("🤖 Starting negotiation for event request:", eventRequestId);
-      
+
       const result = await negotiationAgent.startEventRequestNegotiation(
         eventRequestId,
         organizerId,
         organizerOffer,
         organizerMessage
       );
-      
+
       res.json(result);
     } catch (error) {
       console.error("Failed to start negotiation:", error.message);
       res.status(500).json({
         success: false,
-        error: error.message
+        error: error.message,
       });
     }
   }
@@ -523,22 +614,22 @@ class AgentController {
   async processUserCounterOffer(req, res) {
     try {
       const { negotiationId, userOffer, userMessage } = req.body;
-      const userId = req.user?._id || 'user_' + Date.now(); // From auth
-      
+      const userId = req.user?._id || "user_" + Date.now(); // From auth
+
       console.log("🤖 Processing user counter:", { negotiationId, userOffer });
-      
+
       const result = await negotiationAgent.processUserCounter(
         negotiationId,
         userOffer,
         userMessage
       );
-      
+
       res.json(result);
     } catch (error) {
       console.error("Failed to process counter:", error.message);
       res.status(500).json({
         success: false,
-        error: error.message
+        error: error.message,
       });
     }
   }
@@ -546,15 +637,15 @@ class AgentController {
   async getNegotiationStatus(req, res) {
     try {
       const { negotiationId } = req.params;
-      
+
       const result = await negotiationAgent.getNegotiationStatus(negotiationId);
-      
+
       res.json(result);
     } catch (error) {
       console.error("Failed to get status:", error.message);
       res.status(500).json({
         success: false,
-        error: error.message
+        error: error.message,
       });
     }
   }
@@ -563,15 +654,15 @@ class AgentController {
     try {
       const { negotiationId } = req.params;
       const userId = req.user?._id;
-      
+
       const result = await negotiationAgent.acceptOffer(negotiationId, userId);
-      
+
       res.json(result);
     } catch (error) {
       console.error("Failed to accept offer:", error.message);
       res.status(500).json({
         success: false,
-        error: error.message
+        error: error.message,
       });
     }
   }
@@ -579,23 +670,24 @@ class AgentController {
   async getEventPriceAnalysis(req, res) {
     try {
       const { eventType, location, budget } = req.query;
-      
+
       const result = await negotiationAgent.getPriceAnalysis(
         eventType,
         location,
         parseFloat(budget)
       );
-      
+
       res.json(result);
     } catch (error) {
       console.error("Failed to analyze price:", error.message);
       res.status(500).json({
         success: false,
-        error: error.message
+        error: error.message,
       });
     }
   }
 
+  // ======================================================
   // ==================== ADMIN AGENTS ====================
 
   async getAnalytics(req, res) {

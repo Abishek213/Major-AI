@@ -1,4 +1,4 @@
-const { OpenAIEmbeddings } = require("@langchain/openai");
+const { OllamaEmbeddings } = require("@langchain/ollama");
 const { RecursiveCharacterTextSplitter } = require("@langchain/textsplitters");
 const fs = require("fs").promises;
 const path = require("path");
@@ -73,7 +73,11 @@ class VectorStoreManager {
     this.documentCount = 0;
     this.chunkSize = 500;
     this.chunkOverlap = 50;
-    this.embeddingModel = "text-embedding-ada-002";
+    // Ollama embedding model – configurable via env, default to nomic-embed-text
+    this.embeddingModel =
+      process.env.OLLAMA_EMBEDDING_MODEL || "nomic-embed-text";
+    this.ollamaBaseUrl =
+      process.env.OLLAMA_BASE_URL || "http://localhost:11434";
     this.mockMode = false;
     this.documents = null;
   }
@@ -85,36 +89,46 @@ class VectorStoreManager {
     }
 
     try {
-      logger.info("Initializing Vector Store...");
-      const apiKey = process.env.OPENAI_API_KEY;
+      logger.info("Initializing Vector Store with Ollama...");
 
-      if (!apiKey || apiKey === "YOUR_API_KEY") {
-        logger.warn(
-          "Invalid or default OPENAI_API_KEY found. Using mock mode."
-        );
-        this.mockMode = true;
-        this.isInitialized = true;
-        return { success: true, mode: "mock" };
-      }
-
+      // Try to create Ollama embeddings – if it fails, fall back to mock mode
       this.store = new SimpleMemoryVectorStore();
       logger.info("In-memory vector store initialized");
 
-      this.embeddings = new OpenAIEmbeddings({
-        openAIApiKey: apiKey,
-        modelName: this.embeddingModel,
-        timeout: 30000,
+      this.embeddings = new OllamaEmbeddings({
+        baseUrl: this.ollamaBaseUrl,
+        model: this.embeddingModel,
       });
-      logger.info("OpenAI Embeddings initialized");
-      logger.info(`Using model: ${this.embeddingModel}`);
 
-      this.mockMode = false;
+      // Quick test to verify Ollama is reachable and model exists
+      try {
+        await this.embeddings.embedQuery("test");
+        logger.info(
+          `Ollama Embeddings initialized with model: ${this.embeddingModel}`
+        );
+        this.mockMode = false;
+      } catch (embedError) {
+        logger.error(`Ollama embedding test failed: ${embedError.message}`);
+        logger.warn(
+          "Falling back to mock mode – ensure Ollama is running and the model is pulled"
+        );
+        this.mockMode = true;
+        this.embeddings = null;
+      }
+
       this.isInitialized = true;
-      return { success: true, mode: "live" };
+      return {
+        success: true,
+        mode: this.mockMode ? "mock" : "live",
+        message: this.mockMode
+          ? "Using mock embeddings – Ollama unavailable"
+          : "Ollama embeddings ready",
+      };
     } catch (error) {
       logger.error("Error initializing vector store:", error);
       logger.warn("Falling back to mock mode");
       this.mockMode = true;
+      this.embeddings = null;
       this.isInitialized = true;
       return { success: false, mode: "mock", error: error.message };
     }
@@ -156,7 +170,7 @@ class VectorStoreManager {
         return docs.length;
       }
 
-      logger.info("Generating embeddings...");
+      logger.info("Generating embeddings with Ollama...");
       const startTime = Date.now();
       const texts = docs.map((d) => d.pageContent);
       const embeddings = await this.embeddings.embedDocuments(texts);
@@ -218,10 +232,8 @@ class VectorStoreManager {
         return formattedResults;
       } catch (error) {
         logger.error("Error searching vector store:", error);
-        if (error.message.includes("quota") || error.message.includes("429")) {
-          logger.warn("OpenAI quota exceeded. Switching to mock mode.");
-          this.mockMode = true;
-        }
+        // If Ollama fails, fall back to mock mode for this request
+        logger.warn("Switching to mock mode for this request due to error");
         return this.getMockResults(query, topK);
       }
     } catch (error) {
@@ -258,6 +270,7 @@ class VectorStoreManager {
     }
   }
 
+  // ----- Mock methods (unchanged, keep full functionality) -----
   getMockResults(query, topK = 3) {
     const lowerQuery = query.toLowerCase();
 
@@ -473,8 +486,10 @@ Common topics: How to book events, refund policy, cancel bookings, accepted paym
 
   async addDocuments(documents) {
     try {
-      if (!this.store || !this.embeddings) {
-        logger.warn("Vector store not properly initialized");
+      if (!this.isInitialized) await this.initialize();
+
+      if (this.mockMode || !this.store || !this.embeddings) {
+        logger.warn("Cannot add documents in mock mode – skipping");
         return 0;
       }
 
@@ -528,6 +543,7 @@ Common topics: How to book events, refund policy, cancel bookings, accepted paym
       chunkSize: this.chunkSize,
       chunkOverlap: this.chunkOverlap,
       embeddingModel: this.embeddingModel,
+      ollamaBaseUrl: this.ollamaBaseUrl,
     };
   }
 
@@ -538,6 +554,7 @@ Common topics: How to book events, refund policy, cancel bookings, accepted paym
       documentCount: this.documentCount,
       storeType: "simple-memory",
       embeddingsModel: this.embeddingModel,
+      ollamaBaseUrl: this.ollamaBaseUrl,
       operational: this.isInitialized && (this.store || this.mockMode),
     };
   }
