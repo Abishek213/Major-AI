@@ -13,8 +13,10 @@ router.get("/status", agentController.getSystemStatus);
 // GET /api/agents/list
 router.get("/list", agentController.listAgents);
 
+// ================================================================
 // ==================== USER AGENT ROUTES ====================
 
+// ==================== Recommendation ROUTES =====================
 // POST /api/agents/user/recommendations
 router.post("/user/recommendations", agentController.postRecommendations);
 
@@ -51,14 +53,14 @@ router.post("/process-event-request", agentController.processEventRequest);
 // GET /api/agents/event-suggestions
 router.get("/event-suggestions", agentController.getEventSuggestions);
 
+// ================================================================
 // ==================== ORGANIZER AGENT ROUTES ====================
 
+// ==================== Planning ROUTES ===========================
 // POST /api/agents/organizer/plan-event
 router.post("/organizer/plan-event", agentController.planEvent);
 
-// POST /api/agents/organizer/negotiate
-router.post("/organizer/negotiate", agentController.negotiateBooking);
-
+// ==================== Dashboard Assistant ROUTES ================
 // GET /api/agents/organizer/dashboard/:organizerId
 router.get(
   "/organizer/dashboard/:organizerId",
@@ -67,21 +69,34 @@ router.get(
 
 // ==================== NEGOTIATION ROUTES ====================
 
+// POST /api/agents/organizer/negotiate
+router.post("/organizer/negotiate", agentController.negotiateBooking);
+
 // POST /api/agents/negotiation/start
-router.post('/negotiation/start', agentController.startEventRequestNegotiation);
+router.post("/negotiation/start", agentController.startEventRequestNegotiation);
 
 // POST /api/agents/negotiation/counter
-router.post('/negotiation/counter', agentController.processUserCounterOffer);
+router.post("/negotiation/counter", agentController.processUserCounterOffer);
 
 // GET /api/agents/negotiation/:negotiationId/status
-router.get('/negotiation/:negotiationId/status', agentController.getNegotiationStatus);
+router.get(
+  "/negotiation/:negotiationId/status",
+  agentController.getNegotiationStatus
+);
 
 // POST /api/agents/negotiation/:negotiationId/accept
-router.post('/negotiation/:negotiationId/accept', agentController.acceptNegotiationOffer);
+router.post(
+  "/negotiation/:negotiationId/accept",
+  agentController.acceptNegotiationOffer
+);
 
 // GET /api/agents/negotiation/price-analysis
-router.get('/negotiation/price-analysis', agentController.getEventPriceAnalysis);
+router.get(
+  "/negotiation/price-analysis",
+  agentController.getEventPriceAnalysis
+);
 
+// ============================================================
 // ==================== ADMIN AGENT ROUTES ====================
 
 // GET /api/agents/admin/analytics
@@ -96,6 +111,7 @@ router.post("/admin/analyze-sentiment", agentController.analyzeSentiment);
 // POST /api/agents/admin/fraud-check
 router.post("/admin/fraud-check", agentController.checkFraud);
 
+// ==========================================================================
 // ==================== MULTI-AGENT COLLABORATION ROUTES ====================
 
 // POST /api/agents/collaborate
@@ -158,11 +174,7 @@ router.use((req, res) => {
     error: "Endpoint not found",
     message: `Cannot ${req.method} ${req.originalUrl}`,
     availableEndpoints: {
-      system: [
-        "GET /health",
-        "GET /status",
-        "GET /list"
-      ],
+      system: ["GET /health", "GET /status", "GET /list"],
       user: [
         "POST /user/recommendations",
         "POST /user/booking-support/chat",
@@ -172,31 +184,31 @@ router.use((req, res) => {
         "GET /user/support/faq (deprecated)",
         "POST /user/event-request",
         "POST /process-event-request",
-        "GET /event-suggestions"
+        "GET /event-suggestions",
       ],
       organizer: [
         "POST /organizer/plan-event",
         "POST /organizer/negotiate",
-        "GET /organizer/dashboard/:organizerId"
+        "GET /organizer/dashboard/:organizerId",
       ],
       negotiation: [
         "POST /negotiation/start",
         "POST /negotiation/counter",
         "GET /negotiation/:negotiationId/status",
         "POST /negotiation/:negotiationId/accept",
-        "GET /negotiation/price-analysis"
+        "GET /negotiation/price-analysis",
       ],
       admin: [
         "GET /admin/analytics",
         "POST /admin/sentiment",
         "POST /admin/analyze-sentiment",
-        "POST /admin/fraud-check"
+        "POST /admin/fraud-check",
       ],
       collaboration: [
         "POST /collaborate",
         "GET /workflows/:workflowId/status",
-        "POST /:agentName/execute"
-      ]
+        "POST /:agentName/execute",
+      ],
     },
   });
 });

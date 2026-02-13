@@ -1,4 +1,5 @@
-const { ChatOllama } = require("@langchain/community/chat_models/ollama");
+// ✅ CORRECTED: Using @langchain/ollama package
+const { Ollama } = require("@langchain/ollama");
 const {
   HumanMessage,
   SystemMessage,
@@ -23,16 +24,15 @@ class LangChainConfig {
   }
 
   /**
-   * Returns a ChatOllama instance.
+   * Returns an Ollama instance.
    * Falls back to a mock model if Ollama cannot be initialised.
    */
   getChatModel(options = {}) {
     try {
-      return new ChatOllama({
+      return new Ollama({
         baseUrl: options.baseUrl || this.ollamaBaseUrl,
         model: options.modelName || this.ollamaModel,
         temperature: options.temperature ?? this.defaultTemperature,
-        numCtx: options.maxTokens || 2048, // Context window size
       });
     } catch (error) {
       console.error(`Error initializing Ollama model: ${error.message}`);
@@ -48,14 +48,19 @@ class LangChainConfig {
    */
   getMockModel() {
     return {
-      invoke: async (messages) => {
-        const lastMessage = messages[messages.length - 1];
-        const userQuery =
-          typeof lastMessage === "string" ? lastMessage : lastMessage.content;
+      invoke: async (input) => {
+        // Handle both string and message array inputs
+        let userQuery;
+        if (typeof input === "string") {
+          userQuery = input;
+        } else if (Array.isArray(input)) {
+          const lastMessage = input[input.length - 1];
+          userQuery = lastMessage.content || String(lastMessage);
+        } else {
+          userQuery = String(input);
+        }
 
-        return {
-          content: `[MOCK RESPONSE] Received: "${userQuery}".\nInstall Ollama (https://ollama.ai) and run "ollama pull ${this.ollamaModel}" for real AI responses.`,
-        };
+        return `[MOCK RESPONSE] Received: "${userQuery}".\nInstall Ollama (https://ollama.ai) and run "ollama pull ${this.ollamaModel}" for real AI responses.`;
       },
     };
   }
@@ -118,6 +123,7 @@ Format: Specific percentage savings, actionable steps, and trade-off analysis.`,
 
   /**
    * Builds a complete message chain for the LLM.
+   * For Ollama LLM class, we need to format as a single string prompt.
    */
   buildMessageChain(
     systemPrompt,
@@ -125,24 +131,31 @@ Format: Specific percentage savings, actionable steps, and trade-off analysis.`,
     currentQuery,
     context = ""
   ) {
-    const messages = [];
-
-    messages.push(new SystemMessage(systemPrompt));
+    // Build a formatted prompt string for Ollama
+    let prompt = `${systemPrompt}\n\n`;
 
     if (context && context.trim().length > 0) {
-      messages.push(
-        new SystemMessage(
-          `CONTEXT:\n${context}\n\nUse this information to provide accurate responses.`
-        )
-      );
+      prompt += `CONTEXT:\n${context}\n\n`;
     }
 
-    const historyMessages = this.formatConversationHistory(conversationHistory);
-    messages.push(...historyMessages);
+    // Add conversation history
+    if (Array.isArray(conversationHistory) && conversationHistory.length > 0) {
+      const recentHistory = conversationHistory.slice(-5);
+      prompt += "CONVERSATION HISTORY:\n";
+      recentHistory.forEach((msg) => {
+        if (msg.role === "user") {
+          prompt += `User: ${msg.content}\n`;
+        } else if (msg.role === "assistant") {
+          prompt += `Assistant: ${msg.content}\n`;
+        }
+      });
+      prompt += "\n";
+    }
 
-    messages.push(new HumanMessage(currentQuery));
+    // Add current query
+    prompt += `USER QUERY:\n${currentQuery}\n\nASSISTANT RESPONSE:`;
 
-    return messages;
+    return prompt;
   }
 
   /**
@@ -169,14 +182,15 @@ Format: Specific percentage savings, actionable steps, and trade-off analysis.`,
   async testConnection() {
     try {
       const model = this.getChatModel();
-      const response = await model.invoke([
-        new HumanMessage("Hello, respond with just 'OK' if you're working."),
-      ]);
+      // Ollama LLM class accepts string prompts
+      const response = await model.invoke(
+        "Hello, respond with just 'OK' if you're working."
+      );
 
       return {
         success: true,
         provider: "ollama",
-        response: response.content,
+        response: response,
         message: "Ollama connection successful",
       };
     } catch (error) {
