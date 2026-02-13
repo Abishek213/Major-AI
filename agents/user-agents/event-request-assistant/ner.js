@@ -156,7 +156,7 @@ class NERProcessor {
                 break;
             }
         }
-        const locationKeywords = ["Kathmandu", "Pokhara", "Lalitpur", "Biratnagar", "Birgunj", "Dharan", "Nepalgunj", "Hetauda"];
+        const locationKeywords = ["Kathmandu", "Pokhara", "Lalitpur", "Biratnagar", "Birgunj", "Dharan", "Nepalgunj", "Hetauda","Chitwan", "Janakpur", "Butwal", "Dhangadhi", "Itahari", "Ghorahi", "Bharatpur", "Tulsipur"];
         // entities.locations = cities.filter(city => text.toLowerCase().includes(city.toLowerCase()));
         // Debug: Show what we're looking for
         console.log("Looking for locations in:", lowerText);
