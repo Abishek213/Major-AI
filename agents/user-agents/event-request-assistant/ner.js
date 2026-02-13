@@ -40,61 +40,158 @@ class NERProcessor {
             Return ONLY valid JSON.
             `;
 
-      // if (process.env.OPENAI_API_KEY) {
-      //     const prompt = `Extract event details: "${text}"`;
+            // if (process.env.OPENAI_API_KEY) {
+            //     const prompt = `Extract event details: "${text}"`;
 
-      if (!process.env.OPENAI_API_KEY) {
-        console.log("No OpenAI key detected, running fallback NLP");
-        return this.fallbackExtraction(text);
-      }
+            if (!process.env.OPENAI_API_KEY) {
+                console.log("No OpenAI key detected, running fallback NLP");
+                return this.fallbackExtraction(text);
+            }
 
-      const response = await this.openai.chat.completions.create({
-        model: "gpt-3.5-turbo",
-        messages: [
-          {
-            role: "system",
-            content:
-              "You are an event planning assistant. Extract structured information from event requests.",
-          },
-          { role: "user", content: prompt },
-        ],
-        temperature: 0.3,
-        max_tokens: 500,
-      });
+            const response = await this.openai.chat.completions.create({
+                model: "gpt-3.5-turbo",
+                messages: [
+                    { role: "system", content: "You are an event planning assistant. Extract structured information from event requests." },
+                    { role: "user", content: prompt }
+                ],
+                temperature: 0.3,
+                max_tokens: 500
+            });
 
-      // console.log('DEBUG NER: OpenAI response received');
 
-      const result = response.choices[0].message.content;
-      console.log("DEBUG NER: Raw OpenAI response:", result);
-      return this.parseAndValidateEntities(result);
+            // console.log('DEBUG NER: OpenAI response received');
 
-      // }
-      // else {
-      //     // Fallback to simple extraction
-      //     console.log('No OpenAI API key, using fallback extraction');
-      //     return this.fallbackExtraction(text);
-      // }
-    } catch (error) {
-      console.error(
-        "DEBUG NER: Error in processNaturalLanguage:",
-        error.message
-      );
-      // logger.error(`NER processing failed: ${error.message}`);
+            const result = response.choices[0].message.content;
+            console.log('DEBUG NER: Raw OpenAI response:', result);
+            return this.parseAndValidateEntities(result);
 
-      try {
-        return this.fallbackExtraction(text);
-      } catch (fallbackError) {
-        console.error("Fallback extraction also failed:", fallbackError);
-        // ✅ FIX: Return a minimum valid object
-        return {
-          eventType: "general",
-          locations: [],
-          date: null,
-          budget: null,
-          guests: null,
-          theme: "",
-          requirements: "",
-          description: text,
+            // }
+            // else {
+            //     // Fallback to simple extraction
+            //     console.log('No OpenAI API key, using fallback extraction');
+            //     return this.fallbackExtraction(text);
+            // }
+
+        } catch (error) {
+            console.error('DEBUG NER: Error in processNaturalLanguage:', error.message);
+            // logger.error(`NER processing failed: ${error.message}`);
+
+            try {
+                return this.fallbackExtraction(text);
+            }
+            catch (fallbackError) {
+                console.error("Fallback extraction also failed:", fallbackError);
+                // ✅ FIX: Return a minimum valid object
+                return {
+                    eventType: 'general',
+                    locations: [],
+                    date: null,
+                    budget: null,
+                    guests: null,
+                    theme: '',
+                    requirements: '',
+                    description: text
+                };
+            }
+
+            // Fallback to regex-based extraction if OpenAI fails
+            // return this.fallbackExtraction(text);
+        }
+    }
+
+    parseAndValidateEntities(jsonString) {
+        try {
+            const entities = JSON.parse(jsonString);
+
+            // Validate and clean entities
+            const validated = {
+                eventType: entities.event_type || 'general',
+                locations: Array.isArray(entities.locations) ? entities.locations :
+                    entities.locations ? [entities.locations] : [],
+                date: this.parseDate(entities.date),
+                budget: this.extractBudget(entities.budget),
+                guests: this.extractNumber(entities.guests),
+                theme: entities.theme || '',
+                requirements: entities.requirements || '',
+                description: entities.description || ''
+            };
+
+            // Clean locations
+            validated.locations = validated.locations
+                .map(loc => loc.trim())
+                .filter(loc => loc.length > 0);
+
+            return validated;
+        } catch (error) {
+            logger.error(`Failed to parse NER results: ${error.message}`);
+            return this.fallbackExtraction(jsonString);
+        }
+    }
+
+    fallbackExtraction(text) {
+
+        const lowerText = text.toLowerCase();
+
+        console.log('DEBUG NER: Running fallback extraction for:', text);
+        // Ensure text is a string
+        const textStr = text || '';
+        // const textLower = textStr.toLowerCase();
+        const entities = {
+            eventType: 'general',
+            locations: [],
+            date: null,
+            budget: null,
+            guests: null,
+            theme: '',
+            requirements: '',
+            description: text
+        };
+
+
+        const eventKeywords = ["wedding", "birthday", "conference", "meeting", "seminar", "business", "party", "anniversary", "workshop", "concert", "festival"];
+        // entities.eventType = eventKeywords.find(kw => text.toLowerCase().includes(kw)) || "general";
+        for (const keyword of eventKeywords) {
+            if (lowerText.includes(keyword)) {
+                entities.eventType = keyword;
+                break;
+            }
+        }
+        const locationKeywords = ["Kathmandu", "Pokhara", "Lalitpur", "Biratnagar", "Birgunj", "Dharan", "Nepalgunj", "Hetauda","Chitwan", "Janakpur", "Butwal", "Dhangadhi", "Itahari", "Ghorahi", "Bharatpur", "Tulsipur"];
+        // entities.locations = cities.filter(city => text.toLowerCase().includes(city.toLowerCase()));
+        // Debug: Show what we're looking for
+        console.log("Looking for locations in:", lowerText);
+
+        locationKeywords.forEach(location => {
+            // Use regex for better matching (case insensitive, whole word)
+            const regex = new RegExp(`\\b${location}\\b`, 'i');
+            if (regex.test(lowerText)) {
+                console.log(`✅ Found location: ${location}`);
+                entities.locations.push(location);
+            }
+        });
+
+        // If still no locations found, try harder
+
+        if (entities.locations.length === 0) {
+            // Check for location-like words (capitalized, common city names)
+            const locationWords = text.split(/\s+/).filter(word =>
+                /^[A-Z][a-z]+$/.test(word) && word.length > 3
+            );
+            console.log("Potential location words:", locationWords);
+
+            // Add first capitalized word as potential location
+            if (locationWords.length > 0) {
+                entities.locations.push(locationWords[0].toLowerCase());
+            }
+        }
+
+
+        // Simple regex patterns for fallback
+        const patterns = {
+            budget: /(\$|₹|Rs\.?|USD\s*)?(\d+(?:,\d{3})*(?:\.\d{2})?)/i,
+            guests: /(\d+)\s*(?:guests?|people|persons|attendees)/i,
+            date: /(\d{4}-\d{2}-\d{2})|(\d{1,2}\/\d{1,2}\/\d{4})/
+
         };
       }
 
