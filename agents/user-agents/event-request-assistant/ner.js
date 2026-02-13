@@ -1,10 +1,13 @@
-const { OpenAI } = require("openai");
+const { Ollama } = require("@langchain/ollama");
 const { logger } = require("../../../config/logger");
 
 class NERProcessor {
   constructor() {
-    this.openai = new OpenAI({
-      apiKey: process.env.OPENAI_API_KEY,
+    // Initialize Ollama model
+    this.ollama = new Ollama({
+      baseUrl: process.env.OLLAMA_BASE_URL || "http://localhost:11434",
+      model: process.env.OLLAMA_MODEL || "llama3.2",
+      temperature: 0.3,
     });
 
     this.entityTypes = [
@@ -16,195 +19,113 @@ class NERProcessor {
       "theme",
       "requirements",
     ];
+
+    // Check if we should use mock AI
+    this.useMockAI = process.env.USE_MOCK_AI === "true";
   }
 
-  /**
-   * Process natural language and extract entities
-   */
   async processNaturalLanguage(text) {
     try {
-      const prompt = `
-            Extract the following entities from the event request:
-            "${text}"
-            
-            Extract as JSON with these keys:
-            - event_type: Type of event (wedding, birthday, corporate, etc.)
-            - locations: Array of location mentions
-            - date: Preferred date (YYYY-MM-DD format if available)
-            - budget: Budget amount in numbers
-            - guests: Number of guests if mentioned
-            - theme: Event theme or style
-            - requirements: Special requirements
-            - description: Clean description of the event
-            
-            Return ONLY valid JSON.
-            `;
+      const prompt = `Extract the following entities from the event request:
+"${text}"
 
-            // if (process.env.OPENAI_API_KEY) {
-            //     const prompt = `Extract event details: "${text}"`;
+Extract as JSON with these keys:
+- event_type (string: wedding, birthday, conference, meeting, seminar, business, party, anniversary, workshop, concert, festival, or general)
+- locations (array of strings: city/venue names)
+- date (string: YYYY-MM-DD format or null)
+- budget (number: budget amount in NPR or null)
+- guests (number: expected number of attendees or null)
+- theme (string: event theme or empty string)
+- requirements (string: special requirements or empty string)
+- description (string: brief description of the event)
 
-            if (!process.env.OPENAI_API_KEY) {
-                console.log("No OpenAI key detected, running fallback NLP");
-                return this.fallbackExtraction(text);
-            }
+Important:
+- Return ONLY valid JSON, no explanations or markdown
+- Use null for missing numeric/date values
+- Use empty string "" for missing text values
+- Use empty array [] for missing locations
+- Ensure all field names match exactly
 
-            const response = await this.openai.chat.completions.create({
-                model: "gpt-3.5-turbo",
-                messages: [
-                    { role: "system", content: "You are an event planning assistant. Extract structured information from event requests." },
-                    { role: "user", content: prompt }
-                ],
-                temperature: 0.3,
-                max_tokens: 500
-            });
+Example output format:
+{
+  "event_type": "wedding",
+  "locations": ["Kathmandu"],
+  "date": "2024-06-15",
+  "budget": 500000,
+  "guests": 200,
+  "theme": "traditional",
+  "requirements": "vegetarian catering",
+  "description": "Traditional wedding ceremony"
+}`;
 
-
-            // console.log('DEBUG NER: OpenAI response received');
-
-            const result = response.choices[0].message.content;
-            console.log('DEBUG NER: Raw OpenAI response:', result);
-            return this.parseAndValidateEntities(result);
-
-            // }
-            // else {
-            //     // Fallback to simple extraction
-            //     console.log('No OpenAI API key, using fallback extraction');
-            //     return this.fallbackExtraction(text);
-            // }
-
-        } catch (error) {
-            console.error('DEBUG NER: Error in processNaturalLanguage:', error.message);
-            // logger.error(`NER processing failed: ${error.message}`);
-
-            try {
-                return this.fallbackExtraction(text);
-            }
-            catch (fallbackError) {
-                console.error("Fallback extraction also failed:", fallbackError);
-                // ✅ FIX: Return a minimum valid object
-                return {
-                    eventType: 'general',
-                    locations: [],
-                    date: null,
-                    budget: null,
-                    guests: null,
-                    theme: '',
-                    requirements: '',
-                    description: text
-                };
-            }
-
-            // Fallback to regex-based extraction if OpenAI fails
-            // return this.fallbackExtraction(text);
-        }
-    }
-
-    parseAndValidateEntities(jsonString) {
-        try {
-            const entities = JSON.parse(jsonString);
-
-            // Validate and clean entities
-            const validated = {
-                eventType: entities.event_type || 'general',
-                locations: Array.isArray(entities.locations) ? entities.locations :
-                    entities.locations ? [entities.locations] : [],
-                date: this.parseDate(entities.date),
-                budget: this.extractBudget(entities.budget),
-                guests: this.extractNumber(entities.guests),
-                theme: entities.theme || '',
-                requirements: entities.requirements || '',
-                description: entities.description || ''
-            };
-
-            // Clean locations
-            validated.locations = validated.locations
-                .map(loc => loc.trim())
-                .filter(loc => loc.length > 0);
-
-            return validated;
-        } catch (error) {
-            logger.error(`Failed to parse NER results: ${error.message}`);
-            return this.fallbackExtraction(jsonString);
-        }
-    }
-
-    fallbackExtraction(text) {
-
-        const lowerText = text.toLowerCase();
-
-        console.log('DEBUG NER: Running fallback extraction for:', text);
-        // Ensure text is a string
-        const textStr = text || '';
-        // const textLower = textStr.toLowerCase();
-        const entities = {
-            eventType: 'general',
-            locations: [],
-            date: null,
-            budget: null,
-            guests: null,
-            theme: '',
-            requirements: '',
-            description: text
-        };
-
-
-        const eventKeywords = ["wedding", "birthday", "conference", "meeting", "seminar", "business", "party", "anniversary", "workshop", "concert", "festival"];
-        // entities.eventType = eventKeywords.find(kw => text.toLowerCase().includes(kw)) || "general";
-        for (const keyword of eventKeywords) {
-            if (lowerText.includes(keyword)) {
-                entities.eventType = keyword;
-                break;
-            }
-        }
-        const locationKeywords = ["Kathmandu", "Pokhara", "Lalitpur", "Biratnagar", "Birgunj", "Dharan", "Nepalgunj", "Hetauda","Chitwan", "Janakpur", "Butwal", "Dhangadhi", "Itahari", "Ghorahi", "Bharatpur", "Tulsipur"];
-        // entities.locations = cities.filter(city => text.toLowerCase().includes(city.toLowerCase()));
-        // Debug: Show what we're looking for
-        console.log("Looking for locations in:", lowerText);
-
-        locationKeywords.forEach(location => {
-            // Use regex for better matching (case insensitive, whole word)
-            const regex = new RegExp(`\\b${location}\\b`, 'i');
-            if (regex.test(lowerText)) {
-                console.log(`✅ Found location: ${location}`);
-                entities.locations.push(location);
-            }
-        });
-
-        // If still no locations found, try harder
-
-        if (entities.locations.length === 0) {
-            // Check for location-like words (capitalized, common city names)
-            const locationWords = text.split(/\s+/).filter(word =>
-                /^[A-Z][a-z]+$/.test(word) && word.length > 3
-            );
-            console.log("Potential location words:", locationWords);
-
-            // Add first capitalized word as potential location
-            if (locationWords.length > 0) {
-                entities.locations.push(locationWords[0].toLowerCase());
-            }
-        }
-
-
-        // Simple regex patterns for fallback
-        const patterns = {
-            budget: /(\$|₹|Rs\.?|USD\s*)?(\d+(?:,\d{3})*(?:\.\d{2})?)/i,
-            guests: /(\d+)\s*(?:guests?|people|persons|attendees)/i,
-            date: /(\d{4}-\d{2}-\d{2})|(\d{1,2}\/\d{1,2}\/\d{4})/
-
-        };
+      // If mock AI is enabled, use fallback
+      if (this.useMockAI) {
+        console.log("Mock AI enabled, using fallback NLP");
+        return this.fallbackExtraction(text);
       }
 
-      // Fallback to regex-based extraction if OpenAI fails
-      // return this.fallbackExtraction(text);
+      // System prompt for Ollama
+      const systemPrompt = `You are an event planning assistant that extracts structured information from event requests. 
+You must respond ONLY with valid JSON, no additional text or markdown formatting.`;
+
+      // Combine system prompt and user prompt for Ollama
+      const fullPrompt = `${systemPrompt}
+
+${prompt}`;
+
+      console.log("DEBUG NER: Sending request to Ollama...");
+
+      const response = await this.ollama.invoke(fullPrompt);
+
+      console.log("DEBUG NER: Raw Ollama response:", response);
+
+      // Ollama returns a string response
+      const result = typeof response === "string" ? response : String(response);
+
+      return this.parseAndValidateEntities(result);
+    } catch (error) {
+      console.error(
+        "DEBUG NER: Error in processNaturalLanguage:",
+        error.message
+      );
+
+      try {
+        console.log("Falling back to rule-based extraction");
+        return this.fallbackExtraction(text);
+      } catch (fallbackError) {
+        console.error("Fallback extraction also failed:", fallbackError);
+
+        return {
+          eventType: "general",
+          locations: [],
+          date: null,
+          budget: null,
+          guests: null,
+          theme: "",
+          requirements: "",
+          description: text,
+        };
+      }
     }
   }
 
   parseAndValidateEntities(jsonString) {
     try {
-      const entities = JSON.parse(jsonString);
+      // Clean up the response - remove markdown code blocks if present
+      let cleanedString = jsonString.trim();
 
-      // Validate and clean entities
+      // Remove markdown code blocks
+      cleanedString = cleanedString.replace(/```json\s*/g, "");
+      cleanedString = cleanedString.replace(/```\s*/g, "");
+
+      // Try to extract JSON if there's extra text
+      const jsonMatch = cleanedString.match(/\{[\s\S]*\}/);
+      if (jsonMatch) {
+        cleanedString = jsonMatch[0];
+      }
+
+      const entities = JSON.parse(cleanedString);
+
       const validated = {
         eventType: entities.event_type || "general",
         locations: Array.isArray(entities.locations)
@@ -220,14 +141,19 @@ class NERProcessor {
         description: entities.description || "",
       };
 
-      // Clean locations
+      // Clean up locations
       validated.locations = validated.locations
         .map((loc) => loc.trim())
         .filter((loc) => loc.length > 0);
 
+      console.log("DEBUG NER: Validated entities:", validated);
+
       return validated;
     } catch (error) {
       logger.error(`Failed to parse NER results: ${error.message}`);
+      console.log(
+        "DEBUG NER: Parse error, falling back to rule-based extraction"
+      );
       return this.fallbackExtraction(jsonString);
     }
   }
@@ -236,9 +162,7 @@ class NERProcessor {
     const lowerText = text.toLowerCase();
 
     console.log("DEBUG NER: Running fallback extraction for:", text);
-    // Ensure text is a string
-    const textStr = text || "";
-    // const textLower = textStr.toLowerCase();
+
     const entities = {
       eventType: "general",
       locations: [],
@@ -250,6 +174,7 @@ class NERProcessor {
       description: text,
     };
 
+    // Event type detection
     const eventKeywords = [
       "wedding",
       "birthday",
@@ -263,13 +188,15 @@ class NERProcessor {
       "concert",
       "festival",
     ];
-    // entities.eventType = eventKeywords.find(kw => text.toLowerCase().includes(kw)) || "general";
+
     for (const keyword of eventKeywords) {
       if (lowerText.includes(keyword)) {
         entities.eventType = keyword;
         break;
       }
     }
+
+    // Location detection - Nepal cities
     const locationKeywords = [
       "Kathmandu",
       "Pokhara",
@@ -279,142 +206,177 @@ class NERProcessor {
       "Dharan",
       "Nepalgunj",
       "Hetauda",
+      "Chitwan",
+      "Janakpur",
+      "Butwal",
+      "Dhangadhi",
+      "Itahari",
+      "Ghorahi",
+      "Bharatpur",
+      "Tulsipur",
     ];
-    // entities.locations = cities.filter(city => text.toLowerCase().includes(city.toLowerCase()));
-    // Debug: Show what we're looking for
-    console.log("Looking for locations in:", lowerText);
 
     locationKeywords.forEach((location) => {
-      // Use regex for better matching (case insensitive, whole word)
       const regex = new RegExp(`\\b${location}\\b`, "i");
-      if (regex.test(lowerText)) {
-        console.log(`✅ Found location: ${location}`);
+      if (regex.test(text)) {
         entities.locations.push(location);
       }
     });
 
-    // If still no locations found, try harder
-
+    // Fallback: Look for capitalized words that might be locations
     if (entities.locations.length === 0) {
-      // Check for location-like words (capitalized, common city names)
       const locationWords = text
         .split(/\s+/)
         .filter((word) => /^[A-Z][a-z]+$/.test(word) && word.length > 3);
-      console.log("Potential location words:", locationWords);
 
-      // Add first capitalized word as potential location
       if (locationWords.length > 0) {
-        entities.locations.push(locationWords[0].toLowerCase());
+        entities.locations.push(locationWords[0]);
       }
     }
 
-    // Simple regex patterns for fallback
-    const patterns = {
-      budget: /(\$|₹|Rs\.?|USD\s*)?(\d+(?:,\d{3})*(?:\.\d{2})?)/i,
-      guests: /(\d+)\s*(?:guests?|people|persons|attendees)/i,
-      date: /(\d{4}-\d{2}-\d{2})|(\d{1,2}\/\d{1,2}\/\d{4})/,
-    };
-
-    // Fix budget extraction - look for "budget" keyword specifically
+    // Budget extraction
     const budgetRegex = /budget\s*(?:of|is|:)?\s*(\d+(?:,\d{3})*(?:\.\d{2})?)/i;
-    const budgetMatch = text.match(budgetRegex);
+    const currencyRegex =
+      /(?:rs\.?|npr|usd|\$)\s*(\d+(?:,\d{3})*(?:\.\d{2})?)/i;
 
-    if (budgetMatch) {
-      entities.budget = parseInt(budgetMatch[1].replace(/,/g, ""));
-      console.log(`✅ Extracted budget: ${entities.budget}`);
-    } else {
-      // Look for numbers after currency indicators
-      const currencyRegex =
-        /(?:rs\.?|npr|usd|\$)\s*(\d+(?:,\d{3})*(?:\.\d{2})?)/i;
-      const currencyMatch = text.match(currencyRegex);
+    let match = text.match(budgetRegex) || text.match(currencyRegex);
 
-      if (currencyMatch) {
-        entities.budget = parseInt(currencyMatch[1].replace(/,/g, ""));
-        console.log(`✅ Extracted budget via currency: ${entities.budget}`);
-      } else {
-        // Find the largest number that's NOT the guest count
-        const allNumbers = text.match(/\d+(?:,\d{3})*(?:\.\d{2})?/g) || [];
-        const numbers = allNumbers.map((num) =>
-          parseInt(num.replace(/,/g, ""))
-        );
-
-        if (numbers.length > 0) {
-          // Sort descending, pick the largest (likely budget)
-          numbers.sort((a, b) => b - a);
-          entities.budget = numbers[0];
-          console.log(
-            `✅ Extracted largest number as budget: ${entities.budget}`
-          );
-        }
-      }
+    if (match) {
+      entities.budget = parseInt(match[1].replace(/,/g, ""));
     }
 
-    // Extract guests - fix to avoid conflict with budget
+    // Guests extraction
     const guestsRegex =
       /(\d+)\s*(?:guests?|people|persons|attendees|participants|individuals)\b/i;
     const guestsMatch = text.match(guestsRegex);
 
     if (guestsMatch) {
       entities.guests = parseInt(guestsMatch[1]);
-      console.log(`✅ Extracted guests: ${entities.guests}`);
-    } else {
-      // Alternative pattern: "for X people"
-      const altGuestsRegex = /for\s+(\d+)\s+(?:people|guests|persons)\b/i;
-      const altMatch = text.match(altGuestsRegex);
-      if (altMatch) {
-        entities.guests = parseInt(altMatch[1]);
-        console.log(`✅ Extracted guests (alt): ${entities.guests}`);
-      }
     }
 
-    // Extract date
-    const dateMatch = text.match(patterns.date);
+    // Date extraction
+    const dateRegex = /(\d{4}-\d{2}-\d{2})|(\d{1,2}\/\d{1,2}\/\d{4})/;
+    const dateMatch = text.match(dateRegex);
+
     if (dateMatch) {
       entities.date = dateMatch[0];
     }
 
-    return entities;
+    // Theme extraction (common themes)
+    const themeKeywords = [
+      "traditional",
+      "modern",
+      "vintage",
+      "rustic",
+      "elegant",
+      "casual",
+      "formal",
+      "beach",
+      "garden",
+      "outdoor",
+      "indoor",
+    ];
 
-    // return {
-    //     success: true,
-    //     extractedEntities: entities,
-    //     error: null
-    // };
+    for (const theme of themeKeywords) {
+      if (lowerText.includes(theme)) {
+        entities.theme = theme;
+        break;
+      }
+    }
+
+    // Requirements extraction (common requirements)
+    const requirementKeywords = [
+      "vegetarian",
+      "vegan",
+      "halal",
+      "kosher",
+      "outdoor",
+      "indoor",
+      "parking",
+      "wheelchair",
+      "accessible",
+      "catering",
+      "music",
+      "photography",
+      "decoration",
+    ];
+
+    const foundRequirements = [];
+    for (const requirement of requirementKeywords) {
+      if (lowerText.includes(requirement)) {
+        foundRequirements.push(requirement);
+      }
+    }
+
+    if (foundRequirements.length > 0) {
+      entities.requirements = foundRequirements.join(", ");
+    }
+
+    console.log("DEBUG NER: Fallback extraction result:", entities);
+
+    return entities;
   }
 
   parseDate(dateString) {
     if (!dateString) return null;
 
-    try {
-      const date = new Date(dateString);
-      return isNaN(date.getTime()) ? null : date.toISOString().split("T")[0];
-    } catch (error) {
-      return null;
-    }
+    // Handle different date formats
+    const date = new Date(dateString);
+    return isNaN(date.getTime()) ? null : date.toISOString().split("T")[0];
   }
 
   extractBudget(budgetString) {
     if (!budgetString) return null;
 
-    // Extract numbers from budget string
-    const matches = budgetString.match(/\d+(?:,\d{3})*(?:\.\d{2})?/);
-    if (matches) {
-      return parseFloat(matches[0].replace(/,/g, ""));
-    }
-    return null;
+    // If already a number, return it
+    if (typeof budgetString === "number") return budgetString;
+
+    // Extract number from string
+    const matches = String(budgetString).match(/\d+(?:,\d{3})*(?:\.\d{2})?/);
+    return matches ? parseFloat(matches[0].replace(/,/g, "")) : null;
   }
 
   extractNumber(text) {
     if (!text) return null;
-    const match = text.match(/\d+/);
+
+    // If already a number, return it
+    if (typeof text === "number") return text;
+
+    // Extract number from string
+    const match = String(text).match(/\d+/);
     return match ? parseInt(match[0]) : null;
+  }
+
+  /**
+   * Test Ollama connection
+   */
+  async testConnection() {
+    try {
+      const response = await this.ollama.invoke(
+        "Respond with just 'OK' if you're working."
+      );
+      return {
+        success: true,
+        provider: "ollama",
+        response: response,
+        message: "Ollama connection successful for NER processing",
+      };
+    } catch (error) {
+      return {
+        success: false,
+        provider: "ollama",
+        error: error.message,
+        message:
+          "Ollama connection failed – falling back to rule-based extraction",
+      };
+    }
   }
 }
 
-// Create singleton instance
 const nerProcessor = new NERProcessor();
 
 module.exports = {
   processNaturalLanguage: (text) => nerProcessor.processNaturalLanguage(text),
   NERProcessor,
+  testConnection: () => nerProcessor.testConnection(),
 };
