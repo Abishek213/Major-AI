@@ -1,122 +1,94 @@
 const express = require("express");
 const router = express.Router();
 const agentController = require("../controllers/agent.controller");
+const asyncHandler = require("../../shared/utils/asyncHandler");
+const logger = require("../../config/logger");
 
 // ==================== SYSTEM & GENERAL ROUTES ====================
+router.get("/health", asyncHandler(agentController.getHealth));
+router.get("/status", asyncHandler(agentController.getSystemStatus));
+router.get("/list", asyncHandler(agentController.listAgents));
 
-// GET /api/agents/health
-router.get("/health", agentController.getHealth);
-
-// GET /api/agents/status
-router.get("/status", agentController.getSystemStatus);
-
-// GET /api/agents/list
-router.get("/list", agentController.listAgents);
-
-// ================================================================
 // ==================== USER AGENT ROUTES ====================
+router.post(
+  "/user/recommendations",
+  asyncHandler(agentController.postRecommendations)
+);
 
-// ==================== Recommendation ROUTES =====================
-// POST /api/agents/user/recommendations
-router.post("/user/recommendations", agentController.postRecommendations);
-
-// POST /api/agents/user/booking-support/chat
-router.post("/user/booking-support/chat", agentController.chatBookingSupport);
-
-// POST /api/agents/user/booking-support/clear-history
+router.post(
+  "/user/booking-support/chat",
+  asyncHandler(agentController.chatBookingSupport)
+);
 router.post(
   "/user/booking-support/clear-history",
-  agentController.clearChatHistory
+  asyncHandler(agentController.clearChatHistory)
 );
-
-// GET /api/agents/user/booking-support/health
 router.get(
   "/user/booking-support/health",
-  agentController.getBookingSupportHealth
+  asyncHandler(agentController.getBookingSupportHealth)
 );
-
-// GET /api/agents/user/booking-support/stats
 router.get(
   "/user/booking-support/stats",
-  agentController.getBookingSupportStats
+  asyncHandler(agentController.getBookingSupportStats)
+);
+// Legacy FAQ (deprecated)
+router.get("/user/support/faq", asyncHandler(agentController.getFAQSupport));
+
+router.post(
+  "/user/event-request",
+  asyncHandler(agentController.processEventRequest)
+);
+router.get(
+  "/event-suggestions",
+  asyncHandler(agentController.getEventSuggestions)
 );
 
-// GET /api/agents/user/support/faq (Legacy - deprecated)
-router.get("/user/support/faq", agentController.getFAQSupport);
-
-// POST /api/agents/user/event-request (Alias for process-event-request)
-router.post("/user/event-request", agentController.processEventRequest);
-
-// POST /api/agents/process-event-request
-router.post("/process-event-request", agentController.processEventRequest);
-
-// GET /api/agents/event-suggestions
-router.get("/event-suggestions", agentController.getEventSuggestions);
-
-// ================================================================
 // ==================== ORGANIZER AGENT ROUTES ====================
-
-// ==================== Planning ROUTES ===========================
-// POST /api/agents/organizer/plan-event
-router.post("/organizer/plan-event", agentController.planEvent);
-
-// ==================== Dashboard Assistant ROUTES ================
-// GET /api/agents/organizer/dashboard/:organizerId
+router.post(
+  "/organizer/planning/suggest",
+  asyncHandler(agentController.getPlanningSuggestions)
+);
+router.post("/organizer/plan-event", asyncHandler(agentController.planEvent));
 router.get(
   "/organizer/dashboard/:organizerId",
-  agentController.getOrganizerDashboard
+  asyncHandler(agentController.getOrganizerDashboard)
+);
+router.post(
+  "/organizer/negotiate",
+  asyncHandler(agentController.negotiateBooking)
 );
 
 // ==================== NEGOTIATION ROUTES ====================
-
-// POST /api/agents/organizer/negotiate
-router.post("/organizer/negotiate", agentController.negotiateBooking);
-
-// POST /api/agents/negotiation/start
-router.post("/negotiation/start", agentController.startEventRequestNegotiation);
-
-// POST /api/agents/negotiation/counter
-router.post("/negotiation/counter", agentController.processUserCounterOffer);
-
-// GET /api/agents/negotiation/:negotiationId/status
+router.post(
+  "/negotiation/start",
+  asyncHandler(agentController.startEventRequestNegotiation)
+);
+router.post(
+  "/negotiation/counter",
+  asyncHandler(agentController.processUserCounterOffer)
+);
 router.get(
   "/negotiation/:negotiationId/status",
-  agentController.getNegotiationStatus
+  asyncHandler(agentController.getNegotiationStatus)
 );
-
-// POST /api/agents/negotiation/:negotiationId/accept
 router.post(
   "/negotiation/:negotiationId/accept",
-  agentController.acceptNegotiationOffer
+  asyncHandler(agentController.acceptNegotiationOffer)
 );
-
-// GET /api/agents/negotiation/price-analysis
 router.get(
   "/negotiation/price-analysis",
-  agentController.getEventPriceAnalysis
+  asyncHandler(agentController.getEventPriceAnalysis)
 );
 
-// ============================================================
 // ==================== ADMIN AGENT ROUTES ====================
+router.get("/admin/analytics", asyncHandler(agentController.getAnalytics));
+router.post("/admin/sentiment", asyncHandler(agentController.analyzeSentiment)); // single endpoint
+router.post("/admin/fraud-check", asyncHandler(agentController.checkFraud));
 
-// GET /api/agents/admin/analytics
-router.get("/admin/analytics", agentController.getAnalytics);
-
-// POST /api/agents/admin/sentiment (Alias for analyze-sentiment)
-router.post("/admin/sentiment", agentController.analyzeSentiment);
-
-// POST /api/agents/admin/analyze-sentiment
-router.post("/admin/analyze-sentiment", agentController.analyzeSentiment);
-
-// POST /api/agents/admin/fraud-check
-router.post("/admin/fraud-check", agentController.checkFraud);
-
-// ==========================================================================
 // ==================== MULTI-AGENT COLLABORATION ROUTES ====================
-
-// POST /api/agents/collaborate
-router.post("/collaborate", async (req, res) => {
-  try {
+router.post(
+  "/collaborate",
+  asyncHandler(async (req, res) => {
     const { workflowType, parameters } = req.body;
     res.json({
       success: true,
@@ -127,14 +99,12 @@ router.post("/collaborate", async (req, res) => {
         "Multi-agent collaboration will be implemented with CrewAI/LangGraph",
       plannedFor: "Phase 4+",
     });
-  } catch (error) {
-    res.status(500).json({ success: false, error: error.message });
-  }
-});
+  })
+);
 
-// GET /api/agents/workflows/:workflowId/status
-router.get("/workflows/:workflowId/status", async (req, res) => {
-  try {
+router.get(
+  "/workflows/:workflowId/status",
+  asyncHandler(async (req, res) => {
     const { workflowId } = req.params;
     res.json({
       success: true,
@@ -144,14 +114,12 @@ router.get("/workflows/:workflowId/status", async (req, res) => {
         "Workflow status tracking will be implemented in advanced phases",
       plannedFor: "Phase 4+",
     });
-  } catch (error) {
-    res.status(500).json({ success: false, error: error.message });
-  }
-});
+  })
+);
 
-// POST /api/agents/:agentName/execute
-router.post("/:agentName/execute", async (req, res) => {
-  try {
+router.post(
+  "/:agentName/execute",
+  asyncHandler(async (req, res) => {
     const { agentName } = req.params;
     const parameters = req.body;
     res.json({
@@ -162,13 +130,12 @@ router.post("/:agentName/execute", async (req, res) => {
       status: "pending_implementation",
       message: `Generic execution endpoint - implement specific endpoints for ${agentName}`,
     });
-  } catch (error) {
-    res.status(500).json({ success: false, error: error.message });
-  }
-});
+  })
+);
 
 // ==================== 404 HANDLER ====================
 router.use((req, res) => {
+  logger.warn(`404 - Route not found: ${req.method} ${req.originalUrl}`);
   res.status(404).json({
     success: false,
     error: "Endpoint not found",
@@ -183,7 +150,6 @@ router.use((req, res) => {
         "GET /user/booking-support/stats",
         "GET /user/support/faq (deprecated)",
         "POST /user/event-request",
-        "POST /process-event-request",
         "GET /event-suggestions",
       ],
       organizer: [
@@ -201,7 +167,6 @@ router.use((req, res) => {
       admin: [
         "GET /admin/analytics",
         "POST /admin/sentiment",
-        "POST /admin/analyze-sentiment",
         "POST /admin/fraud-check",
       ],
       collaboration: [

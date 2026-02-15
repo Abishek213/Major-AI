@@ -1,73 +1,124 @@
-// ✅ CORRECTED: Using @langchain/ollama package
-const { Ollama } = require("@langchain/ollama");
+const { ChatOllama } = require("@langchain/ollama");
+const { Ollama: OllamaEmbeddings } = require("@langchain/ollama");
 const {
   HumanMessage,
   SystemMessage,
   AIMessage,
 } = require("@langchain/core/messages");
 
-/**
- * LangChain Configuration – Ollama Only
- *
- * Purpose: Provide LLM capabilities via local Ollama models.
- * No API keys required – runs entirely offline.
- */
 class LangChainConfig {
   constructor() {
     this.ollamaBaseUrl =
       process.env.OLLAMA_BASE_URL || "http://localhost:11434";
-    this.ollamaModel = process.env.OLLAMA_MODEL || "llama3.2"; // or mistral, phi3
-
+    this.ollamaModel = process.env.OLLAMA_MODEL || "llama3.2";
+    this.embeddingModel =
+      process.env.OLLAMA_EMBEDDING_MODEL || "nomic-embed-text";
     this.defaultTemperature = 0.7;
-    // Always true – Ollama is assumed to be running locally
+
+    this.useMockAI = process.env.USE_MOCK_AI === "true";
     this.isConfigured = true;
+
+    if (this.useMockAI) {
+      console.log(
+        "🚧 MOCK MODE ENABLED - Using fallback AI responses (no Ollama calls)"
+      );
+    } else {
+      console.log(
+        `🤖 LLM Mode: Ollama at ${this.ollamaBaseUrl} with model ${this.ollamaModel}`
+      );
+    }
   }
 
-  /**
-   * Returns an Ollama instance.
-   * Falls back to a mock model if Ollama cannot be initialised.
-   */
   getChatModel(options = {}) {
+    // ✅ Return mock model immediately if USE_MOCK_AI=true
+    if (this.useMockAI) {
+      return this.getMockModel();
+    }
+
     try {
-      return new Ollama({
+      return new ChatOllama({
         baseUrl: options.baseUrl || this.ollamaBaseUrl,
         model: options.modelName || this.ollamaModel,
         temperature: options.temperature ?? this.defaultTemperature,
+        timeout: options.timeout || 10000,
       });
     } catch (error) {
-      console.error(`Error initializing Ollama model: ${error.message}`);
-      console.warn(
-        "Falling back to mock model – install Ollama for real AI features"
-      );
+      console.error(`Error initializing ChatOllama: ${error.message}`);
+      console.warn("Falling back to mock model");
       return this.getMockModel();
     }
   }
 
-  /**
-   * Mock model for when Ollama is not available.
-   */
+  getEmbeddingsModel(options = {}) {
+    if (this.useMockAI) {
+      return null; // Skip embeddings in mock mode
+    }
+
+    try {
+      return new OllamaEmbeddings({
+        baseUrl: options.baseUrl || this.ollamaBaseUrl,
+        model: options.modelName || this.embeddingModel,
+      });
+    } catch (error) {
+      console.error(`Error initializing embeddings: ${error.message}`);
+      return null;
+    }
+  }
+
   getMockModel() {
     return {
       invoke: async (input) => {
-        // Handle both string and message array inputs
-        let userQuery;
+        // Simulate minimal processing time
+        await new Promise((resolve) => setTimeout(resolve, 50));
+
+        let userQuery = "";
         if (typeof input === "string") {
           userQuery = input;
         } else if (Array.isArray(input)) {
           const lastMessage = input[input.length - 1];
-          userQuery = lastMessage.content || String(lastMessage);
+          userQuery = lastMessage?.content || String(lastMessage);
         } else {
           userQuery = String(input);
         }
 
-        return `[MOCK RESPONSE] Received: "${userQuery}".\nInstall Ollama (https://ollama.ai) and run "ollama pull ${this.ollamaModel}" for real AI responses.`;
+        // ✅ Intelligent mock responses based on query type
+        let mockContent;
+
+        const queryLower = userQuery.toLowerCase();
+
+        // Tag generation request
+        if (
+          queryLower.includes("tag") &&
+          (queryLower.includes("suggest") || queryLower.includes("generate"))
+        ) {
+          mockContent =
+            "networking, tech, conference, innovation, ai, cloud, professional, development";
+        }
+        // Recommendations request
+        else if (
+          queryLower.includes("recommendation") ||
+          queryLower.includes("actionable")
+        ) {
+          mockContent = JSON.stringify([
+            "Consider early-bird pricing to boost registrations and improve cash flow",
+            "Partner with local tech companies and sponsors to offset venue costs",
+            "Promote heavily on LinkedIn and tech community groups for better reach",
+            "Use event management software to streamline registration and check-in",
+          ]);
+        }
+        // Generic/test request
+        else {
+          mockContent =
+            "Mock AI is active. Real responses available with Ollama.";
+        }
+
+        return {
+          content: mockContent,
+        };
       },
     };
   }
 
-  /**
-   * Returns the appropriate system prompt for the given agent type.
-   */
   createAgentPrompt(agentType) {
     const prompts = {
       "event-recommendation":
@@ -79,22 +130,27 @@ Guidelines: Refer to FAQ context, keep responses concise, include specific steps
 Format: Use clear language, break complex answers into steps, end with helpful closing.`,
 
       "event-planning": `You are an expert event planning assistant for organizers.
-Your role: Help organizers create comprehensive event plans including budget allocation, timelines, vendor recommendations, and risk assessment.
-Guidelines:
-- Provide practical, actionable advice based on event type, location, and budget
-- Consider local context (Nepal-based events)
-- Balance cost-effectiveness with quality
-- Highlight potential risks and mitigation strategies
-- Be specific with numbers, dates, and recommendations
-Format: Clear, structured responses with specific recommendations and reasoning.`,
+Task: Provide 3-5 actionable recommendations for event success.
+Rules:
+- Return ONLY a valid JSON array of strings
+- No markdown, no code fences, no extra text
+- Each recommendation should be specific and actionable
+Example format: ["recommendation 1", "recommendation 2", "recommendation 3"]`,
+
+      "tag-generation": `You are a tag generation specialist for events.
+Task: Generate relevant, searchable tags for an event.
+Rules:
+- Return ONLY a comma-separated list of lowercase tags
+- No quotes, no brackets, no markdown, no numbering
+- 5-8 tags maximum
+- Mix of general and specific terms
+Example format: networking, tech, innovation, conference, ai`,
 
       "budget-optimization": `You are a financial optimization specialist for events.
 Your role: Analyze event budgets and provide intelligent cost-saving recommendations.
 Guidelines:
 - Identify areas for cost reduction without compromising quality
 - Suggest vendor negotiation strategies
-- Provide industry benchmarks and comparisons
-- Consider economies of scale
 - Be realistic about savings potential (10-25% typically achievable)
 Format: Specific percentage savings, actionable steps, and trade-off analysis.`,
 
@@ -105,12 +161,8 @@ Format: Specific percentage savings, actionable steps, and trade-off analysis.`,
     return prompts[agentType] || "You are a helpful AI assistant.";
   }
 
-  /**
-   * Formats conversation history into LangChain message objects.
-   */
   formatConversationHistory(history, maxMessages = 5) {
     if (!Array.isArray(history) || history.length === 0) return [];
-
     const recentHistory = history.slice(-maxMessages);
     return recentHistory
       .map((msg) => {
@@ -121,76 +173,66 @@ Format: Specific percentage savings, actionable steps, and trade-off analysis.`,
       .filter(Boolean);
   }
 
-  /**
-   * Builds a complete message chain for the LLM.
-   * For Ollama LLM class, we need to format as a single string prompt.
-   */
   buildMessageChain(
     systemPrompt,
     conversationHistory = [],
     currentQuery,
     context = ""
   ) {
-    // Build a formatted prompt string for Ollama
-    let prompt = `${systemPrompt}\n\n`;
-
+    const messages = [];
+    messages.push(new SystemMessage(systemPrompt));
     if (context && context.trim().length > 0) {
-      prompt += `CONTEXT:\n${context}\n\n`;
+      messages.push(new SystemMessage(`Context: ${context}`));
     }
-
-    // Add conversation history
     if (Array.isArray(conversationHistory) && conversationHistory.length > 0) {
       const recentHistory = conversationHistory.slice(-5);
-      prompt += "CONVERSATION HISTORY:\n";
       recentHistory.forEach((msg) => {
-        if (msg.role === "user") {
-          prompt += `User: ${msg.content}\n`;
-        } else if (msg.role === "assistant") {
-          prompt += `Assistant: ${msg.content}\n`;
-        }
+        if (msg.role === "user") messages.push(new HumanMessage(msg.content));
+        else if (msg.role === "assistant")
+          messages.push(new AIMessage(msg.content));
       });
-      prompt += "\n";
     }
-
-    // Add current query
-    prompt += `USER QUERY:\n${currentQuery}\n\nASSISTANT RESPONSE:`;
-
-    return prompt;
+    messages.push(new HumanMessage(currentQuery));
+    return messages;
   }
 
-  /**
-   * Returns the current health status of the LLM provider.
-   */
   checkHealth() {
     return {
       provider: "ollama",
       configured: this.isConfigured,
+      mockMode: this.useMockAI,
       ollama: {
         baseUrl: this.ollamaBaseUrl,
         model: this.ollamaModel,
-        available: true, // We assume Ollama is running – actual check would need a ping
+        embeddingModel: this.embeddingModel,
+        available: !this.useMockAI,
       },
-      status: "ready",
-      recommendation:
-        "Ensure Ollama is running with `ollama serve` and the model is pulled.",
+      status: this.useMockAI ? "mock_mode" : "ready",
+      recommendation: this.useMockAI
+        ? "Mock mode active. Set USE_MOCK_AI=false for real AI."
+        : "Ensure Ollama is running with the model pulled.",
     };
   }
 
-  /**
-   * Tests the connection to Ollama by sending a simple prompt.
-   */
   async testConnection() {
+    if (this.useMockAI) {
+      return {
+        success: true,
+        provider: "mock",
+        response: "Mock mode active",
+        message: "Running in mock mode - no Ollama connection needed",
+      };
+    }
+
     try {
       const model = this.getChatModel();
-      // Ollama LLM class accepts string prompts
-      const response = await model.invoke(
-        "Hello, respond with just 'OK' if you're working."
-      );
-
+      const response = await model.invoke([
+        new HumanMessage("Respond with OK"),
+      ]);
       return {
         success: true,
         provider: "ollama",
-        response: response,
+        response: response.content,
         message: "Ollama connection successful",
       };
     } catch (error) {
@@ -198,7 +240,7 @@ Format: Specific percentage savings, actionable steps, and trade-off analysis.`,
         success: false,
         provider: "ollama",
         error: error.message,
-        message: "Ollama connection failed – is the server running?",
+        message: "Ollama connection failed",
       };
     }
   }
