@@ -73,7 +73,6 @@ class VectorStoreManager {
     this.documentCount = 0;
     this.chunkSize = 500;
     this.chunkOverlap = 50;
-    // Ollama embedding model – configurable via env, default to nomic-embed-text
     this.embeddingModel =
       process.env.OLLAMA_EMBEDDING_MODEL || "nomic-embed-text";
     this.ollamaBaseUrl =

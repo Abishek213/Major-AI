@@ -10,11 +10,14 @@ router.get("/status", asyncHandler(agentController.getSystemStatus));
 router.get("/list", asyncHandler(agentController.listAgents));
 
 // ==================== USER AGENT ROUTES ====================
+
+// Event Recommendations
 router.post(
   "/user/recommendations",
   asyncHandler(agentController.postRecommendations)
 );
 
+// Booking Support Agent
 router.post(
   "/user/booking-support/chat",
   asyncHandler(agentController.chatBookingSupport)
@@ -34,6 +37,7 @@ router.get(
 // Legacy FAQ (deprecated)
 router.get("/user/support/faq", asyncHandler(agentController.getFAQSupport));
 
+// Event Request Agent
 router.post(
   "/user/event-request",
   asyncHandler(agentController.processEventRequest)
@@ -44,21 +48,45 @@ router.get(
 );
 
 // ==================== ORGANIZER AGENT ROUTES ====================
+
+// Planning Assistant
 router.post(
   "/organizer/planning/suggest",
   asyncHandler(agentController.getPlanningSuggestions)
 );
 router.post("/organizer/plan-event", asyncHandler(agentController.planEvent));
-router.get(
-  "/organizer/dashboard/:organizerId",
-  asyncHandler(agentController.getOrganizerDashboard)
+
+// DASHBOARD ASSISTANT
+router.post(
+  "/organizer/dashboard/initialize",
+  asyncHandler(agentController.initializeDashboardAssistant)
 );
+router.post(
+  "/organizer/dashboard/insights",
+  asyncHandler(agentController.getDashboardInsights)
+);
+router.post(
+  "/organizer/dashboard/query",
+  asyncHandler(agentController.answerDashboardQuery)
+);
+router.post(
+  "/organizer/dashboard/recommendations",
+  asyncHandler(agentController.getDashboardRecommendations)
+);
+router.get(
+  "/organizer/dashboard/health",
+  asyncHandler(agentController.getDashboardAssistantHealth)
+);
+router.get(
+  "/organizer/dashboard/:organizerId/metrics/:metricType",
+  asyncHandler(agentController.getDashboardSpecificMetric)
+);
+
+// ==================== NEGOTIATION AGENT ROUTES ====================
 router.post(
   "/organizer/negotiate",
   asyncHandler(agentController.negotiateBooking)
 );
-
-// ==================== NEGOTIATION ROUTES ====================
 router.post(
   "/negotiation/start",
   asyncHandler(agentController.startEventRequestNegotiation)
@@ -82,7 +110,7 @@ router.get(
 
 // ==================== ADMIN AGENT ROUTES ====================
 router.get("/admin/analytics", asyncHandler(agentController.getAnalytics));
-router.post("/admin/sentiment", asyncHandler(agentController.analyzeSentiment)); // single endpoint
+router.post("/admin/sentiment", asyncHandler(agentController.analyzeSentiment));
 router.post("/admin/fraud-check", asyncHandler(agentController.checkFraud));
 
 // ==================== MULTI-AGENT COLLABORATION ROUTES ====================
@@ -97,7 +125,7 @@ router.post(
       status: "pending_implementation",
       message:
         "Multi-agent collaboration will be implemented with CrewAI/LangGraph",
-      plannedFor: "Phase 4+",
+      plannedFor: "Phase 5+",
     });
   })
 );
@@ -112,7 +140,7 @@ router.get(
       status: "pending_implementation",
       message:
         "Workflow status tracking will be implemented in advanced phases",
-      plannedFor: "Phase 4+",
+      plannedFor: "Phase 5+",
     });
   })
 );
@@ -153,9 +181,15 @@ router.use((req, res) => {
         "GET /event-suggestions",
       ],
       organizer: [
+        "POST /organizer/planning/suggest",
         "POST /organizer/plan-event",
         "POST /organizer/negotiate",
-        "GET /organizer/dashboard/:organizerId",
+        "POST /organizer/dashboard/initialize",
+        "POST /organizer/dashboard/insights",
+        "POST /organizer/dashboard/query",
+        "POST /organizer/dashboard/recommendations",
+        "GET  /organizer/dashboard/health",
+        "GET  /organizer/dashboard/:organizerId/metrics/:metricType",
       ],
       negotiation: [
         "POST /negotiation/start",

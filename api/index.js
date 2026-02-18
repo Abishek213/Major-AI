@@ -2,12 +2,9 @@ const express = require("express");
 const router = express.Router();
 const agentRoutes = require("./routes/agent.routes");
 const logger = require("../config/logger");
-const agentController = require("./controllers/agent.controller");
 
-// Mount all agent routes
 router.use("/", agentRoutes);
 
-// Root info for this sub‑router
 router.get("/", (req, res) => {
   res.json({
     service: "Eventa AI Agent Service API",
@@ -61,67 +58,6 @@ router.get("/", (req, res) => {
   });
 });
 
-// Legacy endpoints (deprecated)
-router.post("/recommendations", (req, res) => {
-  logger.warn("Legacy endpoint /api/recommendations called");
-  logger.warn("   Please update to /api/agents/user/recommendations");
-  agentController.postRecommendations(req, res);
-});
-
-router.post("/agents/booking-support", (req, res) => {
-  logger.warn("Legacy endpoint /api/agents/booking-support called");
-  logger.warn("   Please update to /api/agents/user/booking-support/chat");
-  agentController.chatBookingSupport(req, res);
-});
-
-router.post("/agents/booking-support/initialize", async (req, res) => {
-  logger.warn("Legacy endpoint /api/agents/booking-support/initialize called");
-  logger.warn(
-    "   Agent initializes automatically - this endpoint is no longer needed"
-  );
-  try {
-    await agentController.initialize();
-    res.json({
-      success: true,
-      message: "Agent initialized (auto-initialization is now default)",
-      note: "This endpoint is deprecated",
-    });
-  } catch (error) {
-    res.status(500).json({ success: false, error: error.message });
-  }
-});
-
-router.get("/agents/booking-support/history/:userId", (req, res) => {
-  logger.warn(
-    "Legacy endpoint /api/agents/booking-support/history/:userId called"
-  );
-  try {
-    const { userId } = req.params;
-    const BookingSupportAgent = require("../agents/user-agents/booking-support-agent");
-    const history = BookingSupportAgent.getFullHistory(userId);
-    res.json({
-      success: true,
-      userId,
-      history,
-      note: "This endpoint is deprecated. History is included in chat responses.",
-    });
-  } catch (error) {
-    res.status(500).json({ success: false, error: error.message });
-  }
-});
-
-router.delete("/agents/booking-support/history/:userId", (req, res) => {
-  logger.warn(
-    "Legacy endpoint DELETE /api/agents/booking-support/history/:userId called"
-  );
-  logger.warn(
-    "   Please update to POST /api/agents/user/booking-support/clear-history"
-  );
-  req.body = { userId: req.params.userId };
-  agentController.clearChatHistory(req, res);
-});
-
-// 404 handler for this router
 router.use((req, res) => {
   res.status(404).json({
     success: false,

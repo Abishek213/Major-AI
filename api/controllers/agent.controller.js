@@ -5,9 +5,6 @@ const EventRequestAIAgent = require("../../agents/user-agents/event-request-assi
 const NegotiationAgent = require("../../agents/organizer-agents/negotiation-agent");
 const PlanningAgent = require("../../agents/organizer-agents/planning-agent");
 
-/**
- * Base controller with common response methods
- */
 class BaseController {
   sendSuccess(res, data, status = 200) {
     res.status(status).json({ success: true, ...data });
@@ -416,6 +413,7 @@ class AgentController extends BaseController {
 
   // ==================== ORGANIZER AGENTS ====================
 
+  // Planning Agent
   getPlanningSuggestions = async (req, res) => {
     try {
       const eventData = req.body;
@@ -514,52 +512,267 @@ class AgentController extends BaseController {
     }
   };
 
-  getOrganizerDashboard = async (req, res) => {
+  // Dashboard Assistant
+
+  initializeDashboardAssistant = async (req, res) => {
     try {
-      const { organizerId } = req.params;
+      const { organizerId } = req.body;
+
+      if (!organizerId) {
+        return this.sendError(res, new Error("organizerId is required"), 400);
+      }
+
+      // FIX: Extract token from Authorization header to forward to backend API
+      const token = req.headers.authorization?.split(" ")[1];
+
       logger.agent(
         "dashboard-assistant",
-        "fetching dashboard",
+        "initializing",
         `organizer: ${organizerId}`
       );
+
+      // Lazy load the class only once, re-initialize per request with correct context
+      if (!this.dashboardAssistant) {
+        const OrganizerDashboardAssistant = require("../../agents/organizer-agents/dashboard-assistant");
+        this.dashboardAssistant = new OrganizerDashboardAssistant();
+      }
+
+      // FIX: Pass token so backendAPI.setAuthToken() is called inside initialize()
+      const result = await this.dashboardAssistant.initialize(
+        organizerId,
+        token
+      );
+
+      // FIX: logger.success() does not exist — use logger.info()
+      logger.info(
+        `Dashboard assistant initialized for organizer: ${organizerId}`
+      );
+
+      this.sendSuccess(res, {
+        ...result,
+        timestamp: new Date().toISOString(),
+      });
+    } catch (error) {
+      logger.error("Dashboard assistant initialization error:", error);
+      this.sendError(
+        res,
+        error,
+        500,
+        "Failed to initialize dashboard assistant"
+      );
+    }
+  };
+
+  getDashboardInsights = async (req, res) => {
+    try {
+      const { organizerId, filters } = req.body;
+
+      if (!organizerId) {
+        return this.sendError(res, new Error("organizerId is required"), 400);
+      }
+
+      // FIX: Extract token for authenticated backend calls
+      const token = req.headers.authorization?.split(" ")[1];
+
+      logger.agent(
+        "dashboard-assistant",
+        "generating insights",
+        `organizer: ${organizerId}`
+      );
+
+      // FIX: Always re-initialize with current request's organizerId + token
+      // Prevents data leakage between different organizers on singleton controller
+      if (!this.dashboardAssistant) {
+        const OrganizerDashboardAssistant = require("../../agents/organizer-agents/dashboard-assistant");
+        this.dashboardAssistant = new OrganizerDashboardAssistant();
+      }
+      await this.dashboardAssistant.initialize(organizerId, token);
+
+      // FIX: Use public method — agent fetches its own metrics internally
+      // Was: this.dashboardAssistant._generateInsights(metrics) — wrong, private + bad pattern
+      const result = await this.dashboardAssistant.getDashboardMetrics(
+        filters || {}
+      );
+
       this.sendSuccess(res, {
         organizerId,
-        dashboard: {
-          status: "pending_implementation",
-          phase: "2.3",
-          upcoming_events: 0,
-          total_bookings: 0,
-          revenue: 0,
-        },
+        insights: result.insights,
+        metrics: result.metrics,
+        timestamp: new Date().toISOString(),
       });
     } catch (error) {
-      logger.error("Organizer dashboard error:", error);
-      this.sendError(res, error, 500, "Failed to fetch dashboard data");
+      logger.error("Dashboard insights error:", error);
+      this.sendError(res, error, 500, "Failed to generate dashboard insights");
     }
   };
 
-  negotiateBooking = async (req, res) => {
+  answerDashboardQuery = async (req, res) => {
     try {
-      const { bookingId, offer, userId } = req.body;
+      const { organizerId, query, context } = req.body;
+
+      if (!organizerId || !query) {
+        return this.sendError(
+          res,
+          new Error("organizerId and query are required"),
+          400
+        );
+      }
+
+      // FIX: Extract token
+      const token = req.headers.authorization?.split(" ")[1];
+
       logger.agent(
-        "negotiation-agent",
-        "starting negotiation",
-        `booking: ${bookingId}`
+        "dashboard-assistant",
+        "processing query",
+        `organizer: ${organizerId}, query: ${query.substring(0, 50)}...`
       );
+
+      // FIX: Re-initialize per request to bind correct organizerId + token
+      if (!this.dashboardAssistant) {
+        const OrganizerDashboardAssistant = require("../../agents/organizer-agents/dashboard-assistant");
+        this.dashboardAssistant = new OrganizerDashboardAssistant();
+      }
+      await this.dashboardAssistant.initialize(organizerId, token);
+
+      const response = await this.dashboardAssistant.answerQuery(query);
+
+      // FIX: logger.success() does not exist — use logger.info()
+      logger.info(`Dashboard query answered for organizer: ${organizerId}`);
+
       this.sendSuccess(res, {
-        bookingId,
-        status: "pending_implementation",
-        phase: "2.2",
-        initial_offer: offer,
-        counter_offer: null,
+        ...response,
+        context: context || {},
       });
     } catch (error) {
-      logger.error("Negotiation error:", error);
-      this.sendError(res, error, 500, "Failed to process negotiation");
+      logger.error("Dashboard query error:", error);
+      this.sendError(res, error, 500, "Failed to process dashboard query");
     }
   };
 
-  // ==================== NEGOTIATION AGENT ====================
+  getDashboardRecommendations = async (req, res) => {
+    try {
+      const { organizerId, filters } = req.body;
+
+      if (!organizerId) {
+        return this.sendError(res, new Error("organizerId is required"), 400);
+      }
+
+      // FIX: Extract token
+      const token = req.headers.authorization?.split(" ")[1];
+
+      logger.agent(
+        "dashboard-assistant",
+        "generating recommendations",
+        `organizer: ${organizerId}`
+      );
+
+      // FIX: Re-initialize per request to bind correct organizerId + token
+      if (!this.dashboardAssistant) {
+        const OrganizerDashboardAssistant = require("../../agents/organizer-agents/dashboard-assistant");
+        this.dashboardAssistant = new OrganizerDashboardAssistant();
+      }
+      await this.dashboardAssistant.initialize(organizerId, token);
+
+      const recommendations = await this.dashboardAssistant.getRecommendations({
+        filters: filters || {},
+      });
+
+      // FIX: logger.success() does not exist — use logger.info()
+      logger.info(`Recommendations generated for organizer: ${organizerId}`);
+
+      this.sendSuccess(res, {
+        ...recommendations,
+        organizerId,
+      });
+    } catch (error) {
+      logger.error("Dashboard recommendations error:", error);
+      this.sendError(
+        res,
+        error,
+        500,
+        "Failed to generate dashboard recommendations"
+      );
+    }
+  };
+
+  getDashboardAssistantHealth = async (req, res) => {
+    try {
+      const health = {
+        agent: "dashboard-assistant",
+        // FIX: Reflects actual runtime state — was hardcoded "initialized"/"not_initialized"
+        status: this.dashboardAssistant ? "initialized" : "not_initialized",
+        type: "organizer",
+        // FIX: Updated from 3.2 to 4.0 (current phase)
+        phase: "4.0",
+        capabilities: {
+          metrics_aggregation: true,
+          insights_generation: true,
+          natural_language_query: true,
+          recommendations: true,
+        },
+        llmProvider: process.env.OLLAMA_MODEL || "llama3.2",
+        timestamp: new Date().toISOString(),
+      };
+
+      const statusCode = health.status === "initialized" ? 200 : 503;
+
+      res.status(statusCode).json({
+        success: health.status === "initialized",
+        ...health,
+      });
+    } catch (error) {
+      logger.error("Dashboard assistant health check error:", error);
+      res.status(503).json({
+        success: false,
+        status: "error",
+        error: error.message,
+        timestamp: new Date().toISOString(),
+      });
+    }
+  };
+
+  getDashboardSpecificMetric = async (req, res) => {
+    try {
+      const { organizerId, metricType } = req.params;
+      const options = req.query;
+
+      if (!organizerId || !metricType) {
+        return this.sendError(
+          res,
+          new Error("organizerId and metricType are required"),
+          400
+        );
+      }
+
+      // FIX: Extract token
+      const token = req.headers.authorization?.split(" ")[1];
+
+      logger.agent(
+        "dashboard-assistant",
+        "fetching metric",
+        `organizer: ${organizerId}, metric: ${metricType}`
+      );
+
+      // FIX: Re-initialize per request to bind correct organizerId + token
+      if (!this.dashboardAssistant) {
+        const OrganizerDashboardAssistant = require("../../agents/organizer-agents/dashboard-assistant");
+        this.dashboardAssistant = new OrganizerDashboardAssistant();
+      }
+      await this.dashboardAssistant.initialize(organizerId, token);
+
+      const result = await this.dashboardAssistant.getSpecificMetric(
+        metricType,
+        options
+      );
+
+      this.sendSuccess(res, result);
+    } catch (error) {
+      logger.error("Dashboard metric fetch error:", error);
+      this.sendError(res, error, 500, "Failed to fetch dashboard metric");
+    }
+  };
+
+  // NEGOTIATION AGENT
 
   startEventRequestNegotiation = async (req, res) => {
     try {
@@ -584,6 +797,27 @@ class AgentController extends BaseController {
     } catch (error) {
       console.error("Failed to start negotiation:", error.message);
       this.sendError(res, error, 500);
+    }
+  };
+
+  negotiateBooking = async (req, res) => {
+    try {
+      const { bookingId, offer, userId } = req.body;
+      logger.agent(
+        "negotiation-agent",
+        "starting negotiation",
+        `booking: ${bookingId}`
+      );
+      this.sendSuccess(res, {
+        bookingId,
+        status: "pending_implementation",
+        phase: "2.2",
+        initial_offer: offer,
+        counter_offer: null,
+      });
+    } catch (error) {
+      logger.error("Negotiation error:", error);
+      this.sendError(res, error, 500, "Failed to process negotiation");
     }
   };
 
