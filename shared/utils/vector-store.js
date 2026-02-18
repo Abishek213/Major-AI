@@ -89,47 +89,58 @@ class VectorStoreManager {
     }
 
     try {
-      logger.info("Initializing Vector Store with Ollama...");
+      logger.info("Initializing Vector Store...");
 
-      // Try to create Ollama embeddings – if it fails, fall back to mock mode
       this.store = new SimpleMemoryVectorStore();
-      logger.info("In-memory vector store initialized");
+
+      // 🔥 FORCE MOCK MODE IN DEVELOPMENT
+      const forceMock =
+        process.env.USE_MOCK_AI === "true" ||
+        process.env.NODE_ENV === "development";
+
+      if (forceMock) {
+        logger.warn("🚧 Running in DEVELOPMENT MOCK mode");
+        this.mockMode = true;
+        this.embeddings = null;
+        this.isInitialized = true;
+
+        return {
+          success: true,
+          mode: "mock",
+          message: "Mock mode enabled (development)",
+        };
+      }
+
+      // 🔥 ONLY INITIALIZE OLLAMA IN TESTING / PRODUCTION
+      logger.info("Initializing Ollama embeddings...");
 
       this.embeddings = new OllamaEmbeddings({
         baseUrl: this.ollamaBaseUrl,
         model: this.embeddingModel,
       });
 
-      // Quick test to verify Ollama is reachable and model exists
-      try {
-        await this.embeddings.embedQuery("test");
-        logger.info(
-          `Ollama Embeddings initialized with model: ${this.embeddingModel}`
-        );
-        this.mockMode = false;
-      } catch (embedError) {
-        logger.error(`Ollama embedding test failed: ${embedError.message}`);
-        logger.warn(
-          "Falling back to mock mode – ensure Ollama is running and the model is pulled"
-        );
-        this.mockMode = true;
-        this.embeddings = null;
-      }
+      await this.embeddings.embedQuery("test");
 
+      logger.info(
+        `Ollama Embeddings initialized with model: ${this.embeddingModel}`
+      );
+
+      this.mockMode = false;
       this.isInitialized = true;
+
       return {
         success: true,
-        mode: this.mockMode ? "mock" : "live",
-        message: this.mockMode
-          ? "Using mock embeddings – Ollama unavailable"
-          : "Ollama embeddings ready",
+        mode: "live",
+        message: "Ollama embeddings ready",
       };
     } catch (error) {
       logger.error("Error initializing vector store:", error);
       logger.warn("Falling back to mock mode");
+
       this.mockMode = true;
       this.embeddings = null;
       this.isInitialized = true;
+
       return { success: false, mode: "mock", error: error.message };
     }
   }
@@ -173,7 +184,39 @@ class VectorStoreManager {
       logger.info("Generating embeddings with Ollama...");
       const startTime = Date.now();
       const texts = docs.map((d) => d.pageContent);
-      const embeddings = await this.embeddings.embedDocuments(texts);
+
+      // Process in batches to show progress
+      const batchSize = 10; // Adjust based on your system / model capacity
+      const totalChunks = texts.length;
+      const embeddings = [];
+
+      logger.info(
+        `Generating embeddings for ${totalChunks} chunks in batches of ${batchSize}...`
+      );
+
+      for (let i = 0; i < texts.length; i += batchSize) {
+        const batch = texts.slice(i, i + batchSize);
+        const batchNumber = Math.floor(i / batchSize) + 1;
+        const totalBatches = Math.ceil(totalChunks / batchSize);
+        const startIdx = i + 1;
+        const endIdx = Math.min(i + batchSize, totalChunks);
+
+        logger.info(
+          `⚙️ Batch ${batchNumber}/${totalBatches} (chunks ${startIdx}-${endIdx}) – generating embeddings...`
+        );
+
+        const batchEmbeddings = await this.embeddings.embedDocuments(batch);
+        embeddings.push(...batchEmbeddings);
+
+        logger.info(
+          `✅ Batch ${batchNumber} complete. Progress: ${embeddings.length}/${totalChunks} chunks embedded.`
+        );
+      }
+
+      const duration = Date.now() - startTime;
+      logger.info(
+        `🎉 All ${totalChunks} embeddings generated in ${duration}ms`
+      );
 
       const ids = texts.map(
         (_, i) => `faq_chunk_${String(i).padStart(6, "0")}`
@@ -181,10 +224,9 @@ class VectorStoreManager {
       const metadatas = docs.map((d) => d.metadata || {});
 
       this.store.add(ids, texts, embeddings, metadatas);
-      const duration = Date.now() - startTime;
       this.documentCount = docs.length;
 
-      logger.info(`Loaded ${this.documentCount} FAQ chunks in ${duration}ms`);
+      logger.info(`Loaded ${this.documentCount} FAQ chunks into vector store.`);
       return this.documentCount;
     } catch (error) {
       logger.error("Error loading FAQ documents:", error);
