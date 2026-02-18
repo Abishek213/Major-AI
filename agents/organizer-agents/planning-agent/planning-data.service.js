@@ -1,13 +1,24 @@
 const logger = require("../../../config/logger");
-const { getDb } = require("../../../config/mongodb");
-const { ObjectId } = require("mongodb");
+const mongoose = require("mongoose");
 
 /**
- * Planning Data Service (Phase 3)
+ * Planning Data Service (Phase 3 - FIXED)
  * Centralised database queries for ORG Planning Agent modules.
- * Reduces duplicate code and ensures consistent data access.
+ *
+ * FIX: Changed from getDb() to mongoose native connection
  */
 class PlanningDataService {
+  /**
+   * Get MongoDB connection
+   * Works with both mongoose.connection.db and direct mongoose operations
+   */
+  getDb() {
+    if (mongoose.connection.readyState === 1) {
+      return mongoose.connection.db;
+    }
+    throw new Error("MongoDB not connected");
+  }
+
   /**
    * Get category document ID by name (case-insensitive)
    * @param {string} categoryName
@@ -16,7 +27,7 @@ class PlanningDataService {
   async getCategoryId(categoryName) {
     if (!categoryName) return null;
     try {
-      const db = getDb();
+      const db = this.getDb();
       const categoriesCollection = db.collection("categories");
       const categoryDoc = await categoriesCollection.findOne({
         categoryName: { $regex: new RegExp(`^${categoryName}$`, "i") },
@@ -41,7 +52,7 @@ class PlanningDataService {
    */
   async findEvents(filters = {}, limit = 50) {
     try {
-      const db = getDb();
+      const db = this.getDb();
       const eventsCollection = db.collection("events");
       const query = {};
 
@@ -82,7 +93,7 @@ class PlanningDataService {
   async getEventBookingsSummary(eventIds) {
     try {
       if (!eventIds.length) return new Map();
-      const db = getDb();
+      const db = this.getDb();
       const bookingsCollection = db.collection("bookings");
       const pipeline = [
         { $match: { eventId: { $in: eventIds } } },

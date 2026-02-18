@@ -2,79 +2,34 @@ const express = require("express");
 const cors = require("cors");
 require("dotenv").config();
 
-// Try to load modules - add better error handling
-let logger, mongoClient, agentController;
-
-try {
-  logger = require("./config/logger");
-} catch (error) {
-  console.error("❌ Failed to load logger:", error.message);
-  // Create a simple logger as fallback
-  logger = {
-    info: (...args) => console.log("[INFO]", ...args),
-    error: (...args) => console.error("[ERROR]", ...args),
-    warn: (...args) => console.warn("[WARN]", ...args),
-    success: (...args) => console.log("[SUCCESS]", ...args),
-    separator: () => console.log("=".repeat(50)),
-    debug: (...args) => {},
-  };
-}
-
-try {
-  mongoClient = require("./config/mongodb");
-} catch (error) {
-  console.error("❌ Failed to load MongoDB config:", error.message);
-  mongoClient = {
-    connect: async () => {
-      console.log("⚠️  MongoDB connection skipped (module not loaded)");
-      return { success: false };
-    },
-    disconnect: async () => {
-      console.log("⚠️  MongoDB disconnect skipped");
-    },
-  };
-}
-
-try {
-  agentController = require("./api/controllers/agent.controller");
-} catch (error) {
-  console.error("❌ Failed to load agent controller:", error.message);
-  agentController = {
-    initialize: async () => {
-      console.log("⚠️  Agent initialization skipped");
-    },
-    getHealth: (req, res) =>
-      res.json({ status: "degraded", message: "Agent controller not loaded" }),
-    postRecommendations: (req, res) =>
-      res.status(500).json({ error: "Service unavailable" }),
-  };
-}
+const logger = require("./config/logger");
+const mongoClient = require("./config/mongodb");
+const agentController = require("./api/controllers/agent.controller");
 
 const app = express();
 const PORT = process.env.PORT || 3002;
 
 // ============================================================================
-// MIDDLEWARE SETUP
+// MIDDLEWARE
 // ============================================================================
-
 app.use(
   cors({
     origin: process.env.CORS_ORIGIN || "*",
     credentials: true,
   })
 );
-
 app.use(express.json({ limit: "10mb" }));
 app.use(express.urlencoded({ extended: true, limit: "10mb" }));
 
+// Request logging
 app.use((req, res, next) => {
   const start = Date.now();
-  console.log(`➡️  ${req.method} ${req.path}`);
+  logger.debug(`➡️ ${req.method} ${req.path}`);
 
   res.on("finish", () => {
     const duration = Date.now() - start;
-    console.log(
-      `⬅️  ${req.method} ${req.path} ${res.statusCode} ${duration}ms`
+    logger.debug(
+      `⬅️ ${req.method} ${req.path} ${res.statusCode} ${duration}ms`
     );
   });
 
@@ -82,29 +37,16 @@ app.use((req, res, next) => {
 });
 
 // ============================================================================
-// API ROUTES
+// ROUTES
 // ============================================================================
+const apiRoutes = require("./api");
+app.use("/api/agents", apiRoutes);
 
-// Try to load API routes with error handling
-let apiRoutes;
-try {
-  apiRoutes = require("./api");
-  app.use("/api/agents", apiRoutes);
-} catch (error) {
-  console.error("❌ Failed to load API routes:", error.message);
-  app.use("/api/agents", (req, res) => {
-    res.status(503).json({
-      error: "API routes not loaded",
-      message: error.message,
-    });
-  });
-}
-
-// Legacy route
+// Legacy direct endpoints
 app.post("/api/recommendations", agentController.postRecommendations);
 app.post("/recommendations", agentController.postRecommendations);
 
-// Root endpoint
+// Root
 app.get("/", (req, res) => {
   res.json({
     service: "Eventa AI Agent Service",
@@ -116,16 +58,15 @@ app.get("/", (req, res) => {
   });
 });
 
-// Health endpoint
+// Health
 app.get("/health", agentController.getHealth);
 
 // ============================================================================
 // ERROR HANDLING
 // ============================================================================
-
-// 404 Handler
+// 404
 app.use((req, res) => {
-  console.warn(`404 - Route not found: ${req.method} ${req.path}`);
+  logger.warn(`404 - Route not found: ${req.method} ${req.path}`);
   res.status(404).json({
     success: false,
     error: "Route not found",
@@ -133,48 +74,43 @@ app.use((req, res) => {
   });
 });
 
-// Global Error Handler
-app.use((error, req, res, next) => {
-  console.error("Unhandled error:", error);
+// Global error handler
+app.use((err, req, res, next) => {
+  logger.error("Unhandled error:", err);
 
-  res.status(error.status || 500).json({
+  res.status(err.status || 500).json({
     success: false,
-    error: error.message || "Internal Server Error",
-    ...(process.env.NODE_ENV === "development" && { stack: error.stack }),
+    error: err.message || "Internal Server Error",
+    ...(process.env.NODE_ENV === "development" && { stack: err.stack }),
   });
 });
 
+// ============================================================================
+// SERVER START
+// ============================================================================
 async function startServer() {
-  console.log("=".repeat(50));
-  console.log("🚀 Starting Eventa AI Agent Service...");
-  console.log("=".repeat(50));
-
   try {
-    // Check environment variables
-    console.log("📋 Checking environment configuration...");
-
+    // Environment checks
     if (!process.env.MONGODB_URI) {
-      console.warn("⚠️  MONGODB_URI not set, using default");
+      logger.warn("MONGODB_URI not set, using default");
       process.env.MONGODB_URI = "mongodb://localhost:27017/Eventa";
     }
 
-    // Optional: show Ollama configuration hint
     if (!process.env.OLLAMA_BASE_URL) {
-      console.log(
-        "ℹ️  OLLAMA_BASE_URL not set, using default: http://localhost:11434"
+      logger.info(
+        "OLLAMA_BASE_URL not set, using default: http://localhost:11434"
       );
     }
     if (!process.env.OLLAMA_MODEL) {
-      console.log("ℹ️  OLLAMA_MODEL not set, using default: llama3.2");
+      logger.info("OLLAMA_MODEL not set, using default: llama3.2");
     }
     if (!process.env.OLLAMA_EMBEDDING_MODEL) {
-      console.log(
-        "ℹ️  OLLAMA_EMBEDDING_MODEL not set, using default: nomic-embed-text"
+      logger.info(
+        "OLLAMA_EMBEDDING_MODEL not set, using default: nomic-embed-text"
       );
     }
 
-    // Connect to MongoDB with timeout
-    console.log("📊 Connecting to MongoDB...");
+    // MongoDB connection (with timeout)
     try {
       await Promise.race([
         mongoClient.connect(),
@@ -185,54 +121,50 @@ async function startServer() {
           )
         ),
       ]);
-      console.log("✅ MongoDB connected successfully");
     } catch (mongoError) {
-      console.warn("⚠️  MongoDB connection failed:", mongoError.message);
-      console.log("⚠️  Continuing without database connection");
+      logger.warn("MongoDB connection failed:", mongoError.message);
+      logger.warn("Continuing without database connection");
     }
 
-    // Initialize agents
-    console.log("🤖 Initializing AI agents...");
+    // Agent initialization
     try {
       await agentController.initialize();
-      console.log("✅ AI agents initialized successfully");
     } catch (agentError) {
-      console.warn("⚠️  Agent initialization failed:", agentError.message);
-      console.log("⚠️  Agents will initialize on first request");
+      logger.warn("Agent initialization failed:", agentError.message);
+      logger.warn("Agents will initialize on first request");
     }
 
-    // Start server
     const server = app.listen(PORT, () => {
-      console.log("=".repeat(50));
-      console.log(`✅ AI Agent Service running on port ${PORT}`);
-      console.log("=".repeat(50));
+      logger.separator();
+      logger.success(`✅ AI Agent Service running on port ${PORT}`);
+      logger.separator();
 
-      console.log("📡 Available Endpoints:");
-      console.log(`   - Health: http://localhost:${PORT}/health`);
-      console.log(`   - Root: http://localhost:${PORT}/`);
-      console.log("=".repeat(50));
+      logger.info("📡 Available Endpoints:");
+      logger.info(`   - Health: http://localhost:${PORT}/health`);
+      logger.info(`   - Root: http://localhost:${PORT}/`);
+      logger.separator();
 
-      console.log("🎉 Server is ready to accept requests!");
-      console.log("=".repeat(50));
+      logger.success("🎉 Server is ready to accept requests!");
+      logger.separator();
     });
 
-    // Handle graceful shutdown
+    // Graceful shutdown
     process.on("SIGINT", () => {
-      console.log("\n🛑 Received SIGINT - Shutting down gracefully...");
+      logger.warn("\n🛑 Received SIGINT - Shutting down gracefully...");
       server.close(async () => {
         try {
           await mongoClient.disconnect();
-          console.log("✅ Server shutdown complete");
+          logger.success("✅ Server shutdown complete");
           process.exit(0);
         } catch (error) {
-          console.error("❌ Error during shutdown:", error);
+          logger.error("❌ Error during shutdown:", error);
           process.exit(1);
         }
       });
     });
   } catch (error) {
-    console.error("❌ Fatal error starting server:", error.message);
-    console.error("Stack:", error.stack);
+    logger.error("❌ Fatal error starting server:", error.message);
+    logger.error("Stack:", error.stack);
     process.exit(1);
   }
 }

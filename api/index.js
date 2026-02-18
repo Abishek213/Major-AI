@@ -1,81 +1,9 @@
 const express = require("express");
 const router = express.Router();
-const agentController = require("./controllers/agent.controller");
-const logger = require("../config/logger"); // <-- ADDED
-
-agentController.initialize().catch((err) => {
-  logger.error(`❌ Failed to initialize AI agents on startup: ${err.message}`);
-});
-
-// ==================== MOUNT ALL AGENT ROUTES ====================
 const agentRoutes = require("./routes/agent.routes");
+const logger = require("../config/logger");
+
 router.use("/", agentRoutes);
-
-// ==================== LEGACY ENDPOINTS (Deprecated) ====================
-router.post("/recommendations", (req, res) => {
-  logger.warn("Legacy endpoint /api/recommendations called");
-  logger.warn("   Please update to /api/agents/user/recommendations");
-  agentController.postRecommendations(req, res);
-});
-
-router.post("/agents/booking-support", (req, res) => {
-  logger.warn("Legacy endpoint /api/agents/booking-support called");
-  logger.warn("   Please update to /api/agents/user/booking-support/chat");
-  agentController.chatBookingSupport(req, res);
-});
-
-router.post("/agents/booking-support/initialize", async (req, res) => {
-  logger.warn("Legacy endpoint /api/agents/booking-support/initialize called");
-  logger.warn(
-    "   Agent initializes automatically - this endpoint is no longer needed"
-  );
-  try {
-    await agentController.initialize();
-    res.json({
-      success: true,
-      message: "Agent initialized (auto-initialization is now default)",
-      note: "This endpoint is deprecated",
-    });
-  } catch (error) {
-    res.status(500).json({
-      success: false,
-      error: error.message,
-    });
-  }
-});
-
-router.get("/agents/booking-support/history/:userId", (req, res) => {
-  logger.warn(
-    "Legacy endpoint /api/agents/booking-support/history/:userId called"
-  );
-  try {
-    const { userId } = req.params;
-    const BookingSupportAgent = require("../agents/user-agents/booking-support-agent");
-    const history = BookingSupportAgent.getFullHistory(userId);
-    res.json({
-      success: true,
-      userId,
-      history,
-      note: "This endpoint is deprecated. History is included in chat responses.",
-    });
-  } catch (error) {
-    res.status(500).json({
-      success: false,
-      error: error.message,
-    });
-  }
-});
-
-router.delete("/agents/booking-support/history/:userId", (req, res) => {
-  logger.warn(
-    "Legacy endpoint DELETE /api/agents/booking-support/history/:userId called"
-  );
-  logger.warn(
-    "   Please update to POST /api/agents/user/booking-support/clear-history"
-  );
-  req.body = { userId: req.params.userId };
-  agentController.clearChatHistory(req, res);
-});
 
 router.get("/", (req, res) => {
   res.json({
@@ -124,16 +52,6 @@ router.get("/", (req, res) => {
         collaborate: "POST /api/agents/collaborate",
         workflow_status: "GET /api/agents/workflows/:workflowId/status",
         execute: "POST /api/agents/:agentName/execute",
-      },
-      legacy: {
-        recommendations: "POST /api/recommendations (deprecated)",
-        booking: "POST /api/agents/booking-support (deprecated)",
-        booking_init:
-          "POST /api/agents/booking-support/initialize (deprecated)",
-        booking_history:
-          "GET /api/agents/booking-support/history/:userId (deprecated)",
-        booking_history_delete:
-          "DELETE /api/agents/booking-support/history/:userId (deprecated)",
       },
     },
     note: "All endpoints are internal - Frontend should call Backend API, not these directly",
