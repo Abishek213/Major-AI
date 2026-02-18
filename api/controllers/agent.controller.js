@@ -169,9 +169,8 @@ class AgentController {
       matchedOrganizers: [
         {
           id: "fallback_org_1",
-          name: `${
-            eventType.charAt(0).toUpperCase() + eventType.slice(1)
-          } Specialists`,
+          name: `${eventType.charAt(0).toUpperCase() + eventType.slice(1)
+            } Specialists`,
           matchPercentage: 75,
           expertise: [eventType],
           location: location,
@@ -614,15 +613,27 @@ class AgentController {
   async processUserCounterOffer(req, res) {
     try {
       const { negotiationId, userOffer, userMessage } = req.body;
-      const userId = req.user?._id || "user_" + Date.now(); // From auth
+      const userId = req.user?._id || "user_" + Date.now();
 
       console.log("🤖 Processing user counter:", { negotiationId, userOffer });
 
-      const result = await negotiationAgent.processUserCounter(
-        negotiationId,
-        userOffer,
-        userMessage
-      );
+      // Create the message object that handleUserCounter expects
+      const message = {
+        data: {
+          negotiationId,
+          userOffer,
+          userMessage,
+          userId,
+          // These need to come from your request body or be fetched
+          eventRequestId: req.body.eventRequestId,
+          organizerOffer: req.body.organizerOffer,
+          eventType: req.body.eventType,
+          location: req.body.location,
+          currentRound: req.body.currentRound
+        }
+      };
+
+      const result = await negotiationAgent.handleUserCounter(message);
 
       res.json(result);
     } catch (error) {

@@ -1,15 +1,9 @@
-const { Ollama } = require("@langchain/ollama");
 const { logger } = require("../../../config/logger");
+const langchain = require("../../../config/langchain");
 
 class NERProcessor {
   constructor() {
-    // Initialize Ollama model
-    this.ollama = new Ollama({
-      baseUrl: process.env.OLLAMA_BASE_URL || "http://localhost:11434",
-      model: process.env.OLLAMA_MODEL || "llama3.2",
-      temperature: 0.3,
-    });
-
+    // Don't initialize OpenAI here - do it lazily when needed
     this.entityTypes = [
       "event_type",
       "location",
@@ -19,300 +13,303 @@ class NERProcessor {
       "theme",
       "requirements",
     ];
+    this.llm= null; 
 
-    // Check if we should use mock AI
-    this.useMockAI = process.env.USE_MOCK_AI === "true";
   }
 
-  async processNaturalLanguage(text) {
+   getLLM() {
+    if (this.llm) return this.llm;
+    
     try {
-      const prompt = `Extract the following entities from the event request:
+      // Get Ollama model from LangChain config
+      this.llm = langchain.getChatModel({
+        temperature: 0.3, // Lower temperature for more consistent extraction
+      });
+      
+      console.log("✅ LangChain Ollama model initialized");
+      return this.llm;
+    } catch (error) {
+      console.error("❌ Failed to initialize LLM:", error.message);
+      return null;
+    }
+  }
+
+  /**
+   * Process natural language and extract entities
+   */
+   async processNaturalLanguage(text) {
+    try {
+      // Check if we should use mock mode (from .env)
+      if (process.env.USE_MOCK_AI === 'true') {
+        console.log("🔧 USE_MOCK_AI=true, using fallback extraction");
+        return this.fallbackExtraction(text);
+      }
+
+      const llm = this.getLLM();
+      
+      // If LLM not available, use fallback
+      if (!llm) {
+        console.log("🔧 LLM not available, using fallback extraction");
+        return this.fallbackExtraction(text);
+      }
+
+      const prompt = this.buildPrompt(text);
+
+      console.log("🦙 Calling Ollama via LangChain for entity extraction...");
+      
+      // Using LangChain's invoke method
+      const response = await llm.invoke(prompt);
+      
+      // Extract content from response (handles both string and AI message objects)
+      const result = typeof response === 'string' 
+        ? response 
+        : response?.content || String(response);
+      
+      console.log('📦 Ollama response received');
+      
+      return this.parseAndValidateEntities(result, text);
+
+    } catch (error) {
+      console.error('❌ Ollama extraction failed:', error.message);
+      console.log("🔧 Falling back to rule-based extraction");
+      return this.fallbackExtraction(text);
+    }
+  }
+
+  /**
+   * Build optimized prompt for entity extraction
+   */
+  buildPrompt(text) {
+    const systemPrompt = langchain.createAgentPrompt('entity-extraction');
+    
+    return `${systemPrompt}
+ 
+Extract the following entities from this event request in Nepal:
+
 "${text}"
 
-Extract as JSON with these keys:
-- event_type (string: wedding, birthday, conference, meeting, seminar, business, party, anniversary, workshop, concert, festival, or general)
-- locations (array of strings: city/venue names)
-- date (string: YYYY-MM-DD format or null)
-- budget (number: budget amount in NPR or null)
-- guests (number: expected number of attendees or null)
-- theme (string: event theme or empty string)
-- requirements (string: special requirements or empty string)
-- description (string: brief description of the event)
+CRITICAL BUDGET CONVERSION RULES:
+- In Nepal/India, "lakh" = 100,000 (1 lakh = 100,000)
+- "5 lakhs" = 500,000
+- "12 lakhs" = 1,200,000
+- "crore" = 10,000,000 (1 crore = 100 lakhs)
+- Always convert to raw numbers in the output
+- Remove any commas, just output the raw number
 
-Important:
-- Return ONLY valid JSON, no explanations or markdown
-- Use null for missing numeric/date values
-- Use empty string "" for missing text values
-- Use empty array [] for missing locations
-- Ensure all field names match exactly
+Example conversions:
+  "8 lakhs" → 800000
+  "2.5 lakhs" → 250000
+  "15 lakhs" → 1500000
+  "1 crore" → 10000000
+  "1.2 crore" → 12000000
 
-Example output format:
+Return ONLY valid JSON with these exact keys:
+- event_type: Type of event (wedding, birthday, corporate, conference, party, anniversary, workshop, concert, festival, or general)
+- locations: Array of Nepali city names mentioned (Kathmandu, Pokhara, Lalitpur, Bhaktapur, Chitwan, Biratnagar, Butwal, etc.)
+- date: Preferred date in YYYY-MM-DD format if available, otherwise null
+- budget: Budget amount in NPR (as raw number, e.g., 800000 for 8 lakhs, just the number, no commas or currency symbols)
+- guests: Number of guests/attendees if mentioned, otherwise null
+- theme: Event theme or style if mentioned (traditional, modern, etc.)
+- requirements: Any special requirements mentioned
+- description: A clean summary of the event request
+
+Example response format:
 {
   "event_type": "wedding",
   "locations": ["Kathmandu"],
-  "date": "2024-06-15",
+  "date": "2024-12-15",
   "budget": 500000,
   "guests": 200,
   "theme": "traditional",
-  "requirements": "vegetarian catering",
-  "description": "Traditional wedding ceremony"
+  "requirements": "need stage decoration",
+  "description": "Traditional wedding in Kathmandu for 200 guests"
 }`;
-
-      // If mock AI is enabled, use fallback
-      if (this.useMockAI) {
-        console.log("Mock AI enabled, using fallback NLP");
-        return this.fallbackExtraction(text);
-      }
-
-      // System prompt for Ollama
-      const systemPrompt = `You are an event planning assistant that extracts structured information from event requests. 
-You must respond ONLY with valid JSON, no additional text or markdown formatting.`;
-
-      // Combine system prompt and user prompt for Ollama
-      const fullPrompt = `${systemPrompt}
-
-${prompt}`;
-
-      console.log("DEBUG NER: Sending request to Ollama...");
-
-      const response = await this.ollama.invoke(fullPrompt);
-
-      console.log("DEBUG NER: Raw Ollama response:", response);
-
-      // Ollama returns a string response
-      const result = typeof response === "string" ? response : String(response);
-
-      return this.parseAndValidateEntities(result);
-    } catch (error) {
-      console.error(
-        "DEBUG NER: Error in processNaturalLanguage:",
-        error.message
-      );
-
-      try {
-        console.log("Falling back to rule-based extraction");
-        return this.fallbackExtraction(text);
-      } catch (fallbackError) {
-        console.error("Fallback extraction also failed:", fallbackError);
-
-        return {
-          eventType: "general",
-          locations: [],
-          date: null,
-          budget: null,
-          guests: null,
-          theme: "",
-          requirements: "",
-          description: text,
-        };
-      }
-    }
   }
 
   parseAndValidateEntities(jsonString) {
     try {
-      // Clean up the response - remove markdown code blocks if present
-      let cleanedString = jsonString.trim();
-
-      // Remove markdown code blocks
-      cleanedString = cleanedString.replace(/```json\s*/g, "");
-      cleanedString = cleanedString.replace(/```\s*/g, "");
-
-      // Try to extract JSON if there's extra text
-      const jsonMatch = cleanedString.match(/\{[\s\S]*\}/);
+      // Try to extract JSON if it's wrapped in markdown code blocks
+      let cleanJson = jsonString;
+      const jsonMatch = jsonString.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
       if (jsonMatch) {
-        cleanedString = jsonMatch[0];
+        cleanJson = jsonMatch[1];
       }
 
-      const entities = JSON.parse(cleanedString);
+      const entities = JSON.parse(cleanJson);
 
       const validated = {
-        eventType: entities.event_type || "general",
-        locations: Array.isArray(entities.locations)
-          ? entities.locations
-          : entities.locations
-          ? [entities.locations]
-          : [],
+        eventType: entities.event_type || 'general',
+        locations: Array.isArray(entities.locations) ? entities.locations :
+                   entities.locations ? [entities.locations] : [],
         date: this.parseDate(entities.date),
         budget: this.extractBudget(entities.budget),
         guests: this.extractNumber(entities.guests),
-        theme: entities.theme || "",
-        requirements: entities.requirements || "",
-        description: entities.description || "",
+        theme: entities.theme || '',
+        requirements: entities.requirements || '',
+        description: entities.description || text
       };
 
       // Clean up locations
       validated.locations = validated.locations
-        .map((loc) => loc.trim())
-        .filter((loc) => loc.length > 0);
+        .map(loc => loc.trim())
+        .filter(loc => loc.length > 0);
 
-      console.log("DEBUG NER: Validated entities:", validated);
+      console.log("✅ Successfully parsed entities:", {
+        eventType: validated.eventType,
+        locations: validated.locations,
+        budget: validated.budget,
+        guests: validated.guests
+      });
 
       return validated;
     } catch (error) {
-      logger.error(`Failed to parse NER results: ${error.message}`);
-      console.log(
-        "DEBUG NER: Parse error, falling back to rule-based extraction"
-      );
+      console.error(`❌ Failed to parse NER JSON: ${error.message}`);
+      console.log("Raw JSON string:", jsonString);
       return this.fallbackExtraction(jsonString);
     }
   }
 
   fallbackExtraction(text) {
+    if (typeof text !== 'string') {
+      text = String(text || '');
+    }
+    
     const lowerText = text.toLowerCase();
+    const originalText = text;
 
-    console.log("DEBUG NER: Running fallback extraction for:", text);
-
+    console.log('🔧 Running fallback extraction for:', text.substring(0, 100) + '...');
+    
     const entities = {
-      eventType: "general",
+      eventType: 'general',
       locations: [],
       date: null,
       budget: null,
       guests: null,
-      theme: "",
-      requirements: "",
-      description: text,
+      theme: '',
+      requirements: '',
+      description: originalText
     };
 
-    // Event type detection
+    // Extract event type with better detection
     const eventKeywords = [
-      "wedding",
-      "birthday",
-      "conference",
-      "meeting",
-      "seminar",
-      "business",
-      "party",
-      "anniversary",
-      "workshop",
-      "concert",
-      "festival",
+      { word: "wedding", type: "wedding", patterns: ["wedding", "wed", "marriage", "bihe"] },
+      { word: "birthday", type: "birthday", patterns: ["birthday", "bday", "born"] },
+      { word: "corporate", type: "corporate", patterns: ["corporate", "business", "company", "office"] },
+      { word: "conference", type: "conference", patterns: ["conference", "seminar", "meeting"] },
+      { word: "party", type: "party", patterns: ["party", "celebration"] },
+      { word: "anniversary", type: "anniversary", patterns: ["anniversary"] },
+      { word: "workshop", type: "workshop", patterns: ["workshop", "training"] },
+      { word: "concert", type: "concert", patterns: ["concert", "live", "music"] },
+      { word: "festival", type: "festival", patterns: ["festival", "mela"] }
     ];
-
-    for (const keyword of eventKeywords) {
-      if (lowerText.includes(keyword)) {
-        entities.eventType = keyword;
+    
+    for (const { word, type } of eventKeywords) {
+      if (lowerText.includes(word)) {
+        entities.eventType = type;
+        console.log(`✅ Detected event type: ${type} (matched: ${word})`);
         break;
       }
     }
 
-    // Location detection - Nepal cities
+    // Extract locations - Nepal cities
     const locationKeywords = [
-      "Kathmandu",
-      "Pokhara",
-      "Lalitpur",
-      "Biratnagar",
-      "Birgunj",
-      "Dharan",
-      "Nepalgunj",
-      "Hetauda",
-      "Chitwan",
-      "Janakpur",
-      "Butwal",
-      "Dhangadhi",
-      "Itahari",
-      "Ghorahi",
-      "Bharatpur",
-      "Tulsipur",
+      "kathmandu", "pokhara", "lalitpur", "bhaktapur", "chitwan", "biratnagar",
+      "birgunj", "dharan", "nepalgunj", "hetauda", "janakpur", "butwal",
+      "dhangadhi", "itahari", "ghorahi", "bharatpur", "tulsipur"
     ];
 
-    locationKeywords.forEach((location) => {
-      const regex = new RegExp(`\\b${location}\\b`, "i");
-      if (regex.test(text)) {
-        entities.locations.push(location);
+    locationKeywords.forEach(location => {
+      if (lowerText.includes(location)) {
+        // Capitalize properly
+        const capitalized = location.charAt(0).toUpperCase() + location.slice(1);
+        entities.locations.push(capitalized);
+        console.log(`✅ Found location: ${capitalized}`);
       }
     });
 
-    // Fallback: Look for capitalized words that might be locations
-    if (entities.locations.length === 0) {
-      const locationWords = text
-        .split(/\s+/)
-        .filter((word) => /^[A-Z][a-z]+$/.test(word) && word.length > 3);
-
-      if (locationWords.length > 0) {
-        entities.locations.push(locationWords[0]);
-      }
-    }
-
-    // Budget extraction
-    const budgetRegex = /budget\s*(?:of|is|:)?\s*(\d+(?:,\d{3})*(?:\.\d{2})?)/i;
-    const currencyRegex =
-      /(?:rs\.?|npr|usd|\$)\s*(\d+(?:,\d{3})*(?:\.\d{2})?)/i;
-
-    let match = text.match(budgetRegex) || text.match(currencyRegex);
-
-    if (match) {
-      entities.budget = parseInt(match[1].replace(/,/g, ""));
-    }
-
-    // Guests extraction
-    const guestsRegex =
-      /(\d+)\s*(?:guests?|people|persons|attendees|participants|individuals)\b/i;
-    const guestsMatch = text.match(guestsRegex);
-
-    if (guestsMatch) {
-      entities.guests = parseInt(guestsMatch[1]);
-    }
-
-    // Date extraction
-    const dateRegex = /(\d{4}-\d{2}-\d{2})|(\d{1,2}\/\d{1,2}\/\d{4})/;
-    const dateMatch = text.match(dateRegex);
-
-    if (dateMatch) {
-      entities.date = dateMatch[0];
-    }
-
-    // Theme extraction (common themes)
-    const themeKeywords = [
-      "traditional",
-      "modern",
-      "vintage",
-      "rustic",
-      "elegant",
-      "casual",
-      "formal",
-      "beach",
-      "garden",
-      "outdoor",
-      "indoor",
+    // Extract budget with better regex
+    const budgetPatterns = [
+      /(?:rs\.?|npr|रु)\s*(\d+(?:,\d{3})*(?:\.\d{2})?)/i,
+      /budget\s*(?:of|is|:)?\s*(?:rs\.?|npr|रु)?\s*(\d+(?:,\d{3})*(?:\.\d{2})?)/i,
+      /(\d+(?:,\d{3})*(?:\.\d{2})?)\s*(?:rs\.?|npr|रु)/i,
+      /(?:with|of)\s*(?:rs\.?|npr|रु)?\s*(\d+(?:,\d{3})*(?:\.\d{2})?)/i
     ];
 
-    for (const theme of themeKeywords) {
-      if (lowerText.includes(theme)) {
-        entities.theme = theme;
+    for (const pattern of budgetPatterns) {
+      const match = originalText.match(pattern);
+      if (match) {
+        entities.budget = parseInt(match[1].replace(/,/g, ""));
+        console.log(`✅ Extracted budget: ${entities.budget}`);
         break;
       }
     }
 
-    // Requirements extraction (common requirements)
-    const requirementKeywords = [
-      "vegetarian",
-      "vegan",
-      "halal",
-      "kosher",
-      "outdoor",
-      "indoor",
-      "parking",
-      "wheelchair",
-      "accessible",
-      "catering",
-      "music",
-      "photography",
-      "decoration",
-    ];
-
-    const foundRequirements = [];
-    for (const requirement of requirementKeywords) {
-      if (lowerText.includes(requirement)) {
-        foundRequirements.push(requirement);
+    // If no budget found with patterns, try to find large numbers
+    if (!entities.budget) {
+      const allNumbers = originalText.match(/\d+(?:,\d{3})*(?:\.\d{2})?/g) || [];
+      const numbers = allNumbers.map(num => parseInt(num.replace(/,/g, "")));
+      
+      // Filter for reasonable budget numbers (> 1000)
+      const possibleBudgets = numbers.filter(n => n > 1000 && n < 10000000);
+      if (possibleBudgets.length > 0) {
+        entities.budget = Math.max(...possibleBudgets);
+        console.log(`✅ Extracted largest number as budget: ${entities.budget}`);
       }
     }
 
-    if (foundRequirements.length > 0) {
-      entities.requirements = foundRequirements.join(", ");
+    // Extract guests
+    const guestsPatterns = [
+      /(\d+)\s*(?:guests?|people|persons|attendees|participants|individuals|pax)\b/i,
+      /for\s+(\d+)\s+(?:guests?|people|persons)\b/i,
+      /(\d+)\s*(?:person|guest)\b/i
+    ];
+
+    for (const pattern of guestsPatterns) {
+      const match = originalText.match(pattern);
+      if (match) {
+        entities.guests = parseInt(match[1]);
+        console.log(`✅ Extracted guests: ${entities.guests}`);
+        break;
+      }
     }
 
-    console.log("DEBUG NER: Fallback extraction result:", entities);
+    // If no guests found, look for standalone numbers that might be guest count
+    if (!entities.guests && entities.budget) {
+      const allNumbers = originalText.match(/\d+/g) || [];
+      const numbers = allNumbers.map(Number);
+      // Guest count is usually smaller than budget
+      const possibleGuests = numbers.filter(n => n > 5 && n < 1000 && n !== entities.budget);
+      if (possibleGuests.length > 0) {
+        entities.guests = possibleGuests[0];
+        console.log(`✅ Inferred guests: ${entities.guests}`);
+      }
+    }
+
+    // Extract date
+    const datePatterns = [
+      /(\d{4}-\d{2}-\d{2})/,
+      /(\d{1,2}[\/-]\d{1,2}[\/-]\d{4})/,
+      /(\d{1,2}(?:st|nd|rd|th)?\s+(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\s+\d{4})/i
+    ];
+    
+    for (const pattern of datePatterns) {
+      const match = originalText.match(pattern);
+      if (match) {
+        entities.date = match[1] || match[0];
+        console.log(`✅ Found date: ${entities.date}`);
+        break;
+      }
+    }
+
+    // Extract theme (simple detection)
+    const themeKeywords = ["theme", "style", "traditional", "modern", "rustic", "elegant", "casual"];
+    for (const keyword of themeKeywords) {
+      if (lowerText.includes(keyword)) {
+        entities.theme = keyword;
+        console.log(`✅ Found theme: ${keyword}`);
+        break;
+      }
+    }
 
     return entities;
   }
@@ -320,63 +317,35 @@ ${prompt}`;
   parseDate(dateString) {
     if (!dateString) return null;
 
-    // Handle different date formats
-    const date = new Date(dateString);
-    return isNaN(date.getTime()) ? null : date.toISOString().split("T")[0];
+    try {
+      const date = new Date(dateString);
+      return isNaN(date.getTime()) ? null : date.toISOString().split("T")[0];
+    } catch (error) {
+      return null;
+    }
   }
 
   extractBudget(budgetString) {
     if (!budgetString) return null;
 
-    // If already a number, return it
-    if (typeof budgetString === "number") return budgetString;
-
-    // Extract number from string
-    const matches = String(budgetString).match(/\d+(?:,\d{3})*(?:\.\d{2})?/);
-    return matches ? parseFloat(matches[0].replace(/,/g, "")) : null;
+    const matches = budgetString.toString().match(/\d+(?:,\d{3})*(?:\.\d{2})?/);
+    if (matches) {
+      return parseFloat(matches[0].replace(/,/g, ""));
+    }
+    return null;
   }
 
   extractNumber(text) {
     if (!text) return null;
-
-    // If already a number, return it
-    if (typeof text === "number") return text;
-
-    // Extract number from string
-    const match = String(text).match(/\d+/);
+    const match = text.toString().match(/\d+/);
     return match ? parseInt(match[0]) : null;
-  }
-
-  /**
-   * Test Ollama connection
-   */
-  async testConnection() {
-    try {
-      const response = await this.ollama.invoke(
-        "Respond with just 'OK' if you're working."
-      );
-      return {
-        success: true,
-        provider: "ollama",
-        response: response,
-        message: "Ollama connection successful for NER processing",
-      };
-    } catch (error) {
-      return {
-        success: false,
-        provider: "ollama",
-        error: error.message,
-        message:
-          "Ollama connection failed – falling back to rule-based extraction",
-      };
-    }
   }
 }
 
+// Create singleton instance
 const nerProcessor = new NERProcessor();
 
 module.exports = {
   processNaturalLanguage: (text) => nerProcessor.processNaturalLanguage(text),
   NERProcessor,
-  testConnection: () => nerProcessor.testConnection(),
 };
