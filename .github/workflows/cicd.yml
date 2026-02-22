@@ -16,7 +16,7 @@ jobs:
         run: docker login -u ${{ secrets.DOCKER_USERNAME }} -p ${{ secrets.DOCKER_PASSWORD }}
 
       - name: Build AI Agent Image
-        run: docker build -t himanshhhh/eventa-ai-agent:latest .
+        run: docker build -t himanshhhh/eventa-ai:latest .   # ✅ fixed
 
       - name: Push AI Agent Image
         run: docker push himanshhhh/eventa-ai:latest
