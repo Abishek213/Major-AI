@@ -1,0 +1,67 @@
+name: Deploy AI Agent
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Source
+        uses: actions/checkout@v4
+
+      - name: Login to Docker Hub
+        run: docker login -u ${{ secrets.DOCKER_USERNAME }} -p ${{ secrets.DOCKER_PASSWORD }}
+
+      - name: Build AI Agent Image
+        run: docker build -t himanshhhh/eventa-ai-agent:latest .
+
+      - name: Push AI Agent Image
+        run: docker push himanshhhh/eventa-ai:latest
+
+  deploy:
+    needs: build
+    runs-on: self-hosted
+    steps:
+      - name: Checkout Source
+        uses: actions/checkout@v4
+
+      - name: Pull Image from Docker Hub
+        run: docker pull himanshhhh/eventa-ai:latest
+
+      - name: Delete Old AI Agent Container
+        run: docker rm -f eventa-ai || true
+
+      - name: Start Ollama Container (if not running)
+        run: |
+          docker start eventa-ollama 2>/dev/null || \
+          docker run -d \
+            -p 11434:11434 \
+            --name eventa-ollama \
+            --restart unless-stopped \
+            -v ollama_data:/root/.ollama \
+            ollama/ollama:latest
+
+      - name: Pull Ollama Model
+        run: |
+          sleep 5
+          docker exec eventa-ollama ollama pull llama3.2 || true
+          docker exec eventa-ollama ollama pull nomic-embed-text || true
+
+      - name: Run AI Agent Container
+        run: |
+          docker run -d \
+            -p 3002:3002 \
+            --name eventa-ai \
+            --restart unless-stopped \
+            -e PORT=3002 \
+            -e NODE_ENV=production \
+            -e MONGODB_URI='${{ secrets.MONGODB_URI }}' \
+            -e OLLAMA_BASE_URL='http://52.70.70.109:11434' \
+            -e OLLAMA_MODEL='llama3.2' \
+            -e OLLAMA_EMBEDDING_MODEL='nomic-embed-text' \
+            -e BACKEND_URL='${{ secrets.BACKEND_URL }}' \
+            -e CORS_ORIGIN='*' \
+            himanshhhh/eventa-ai:latest
