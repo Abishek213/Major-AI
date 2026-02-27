@@ -56,7 +56,7 @@ router.post(
 );
 router.post("/organizer/plan-event", asyncHandler(agentController.planEvent));
 
-// DASHBOARD ASSISTANT
+// Dashboard Assistant
 router.post(
   "/organizer/dashboard/initialize",
   asyncHandler(agentController.initializeDashboardAssistant)
@@ -77,6 +77,7 @@ router.get(
   "/organizer/dashboard/health",
   asyncHandler(agentController.getDashboardAssistantHealth)
 );
+// NOTE: this specific-param route uses 4 segments and cannot shadow any other route
 router.get(
   "/organizer/dashboard/:organizerId/metrics/:metricType",
   asyncHandler(agentController.getDashboardSpecificMetric)
@@ -95,6 +96,11 @@ router.post(
   "/negotiation/counter",
   asyncHandler(agentController.processUserCounterOffer)
 );
+
+// NOTE on route ordering: The two param routes below use 3 path segments
+// (/negotiation/:id/status and /negotiation/:id/accept). The literal route
+// below them (/negotiation/price-analysis) uses only 2 segments, so Express
+// will never confuse them — they simply cannot match each other.
 router.get(
   "/negotiation/:negotiationId/status",
   asyncHandler(agentController.getNegotiationStatus)
@@ -145,6 +151,9 @@ router.get(
   })
 );
 
+// NOTE: This wildcard POST is intentionally registered last so it only catches
+// requests that didn't match any specific route above. If you add new POST routes
+// in future, always register them ABOVE this line.
 router.post(
   "/:agentName/execute",
   asyncHandler(async (req, res) => {
@@ -156,7 +165,7 @@ router.post(
       parameters,
       executionId: `exec_${Date.now()}`,
       status: "pending_implementation",
-      message: `Generic execution endpoint - implement specific endpoints for ${agentName}`,
+      message: `Generic execution endpoint — implement a specific endpoint for ${agentName}`,
     });
   })
 );
